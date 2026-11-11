@@ -1,0 +1,7 @@
+*
+!infra/
+!infra/container/
+!infra/container/Dockerfile
+!infra/container/requirements.txt
+!infra/scripts/
+!infra/scripts/*.py

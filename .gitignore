@@ -224,3 +224,11 @@ __marimo__/
 .python-version
 data/
 qwen_obfuscated_lora/
+# OpenTofu local state and deployment inputs (commit provider lock files).
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+*.tfvars.json
+*.tfplan
+crash.log
