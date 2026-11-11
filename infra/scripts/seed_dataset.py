@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Archive a pinned WildGuardMix revision in the existing S3 artifact bucket."""
+"""Archive a pinned WildGuardMix revision in the dedicated S3 datasets bucket."""
 
 import argparse
 import json
@@ -54,7 +54,7 @@ def seed_dataset(s3, bucket, revision, cache_dir, hub):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--bucket", required=True)
+    parser.add_argument("--bucket", required=True, help="Dedicated datasets bucket (dataset_bucket OpenTofu output)")
     parser.add_argument("--revision", default="main", help="Upstream ref resolved to a full SHA before downloading")
     parser.add_argument("--cache-dir", default=".cache/huggingface")
     args = parser.parse_args()

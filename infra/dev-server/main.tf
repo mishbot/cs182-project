@@ -22,6 +22,7 @@ variable "region" {
 variable "availability_zone" { type = string }
 variable "project" { type = string }
 variable "model_bucket" { type = string }
+variable "dataset_bucket" { type = string }
 variable "activation_bucket" { type = string }
 variable "ecr_repository" { type = string }
 variable "data_volume_id" { type = string }
@@ -62,6 +63,7 @@ data "aws_ebs_volume" "data" {
   }
 }
 data "aws_s3_bucket" "models" { bucket = var.model_bucket }
+data "aws_s3_bucket" "datasets" { bucket = var.dataset_bucket }
 data "aws_s3_bucket" "activations" { bucket = var.activation_bucket }
 data "aws_ecr_repository" "runtime" { name = var.ecr_repository }
 
@@ -123,8 +125,8 @@ resource "aws_iam_role_policy" "read" {
   policy = jsonencode({
     Version = "2012-10-17"
     Statement = [
-      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = data.aws_s3_bucket.models.arn },
-      { Effect = "Allow", Action = ["s3:GetObject"], Resource = "${data.aws_s3_bucket.models.arn}/*" },
+      { Effect = "Allow", Action = ["s3:ListBucket"], Resource = [data.aws_s3_bucket.models.arn, data.aws_s3_bucket.datasets.arn] },
+      { Effect = "Allow", Action = ["s3:GetObject"], Resource = ["${data.aws_s3_bucket.models.arn}/*", "${data.aws_s3_bucket.datasets.arn}/*"] },
       { Effect = "Allow", Action = ["ecr:GetAuthorizationToken"], Resource = "*" },
       {
         Effect   = "Allow"
@@ -183,6 +185,10 @@ resource "aws_instance" "dev" {
       condition     = data.aws_s3_bucket.activations.region == var.region
       error_message = "The activation bucket and dev server must share a region."
     }
+    precondition {
+      condition     = data.aws_s3_bucket.datasets.region == var.region
+      error_message = "The dataset bucket and dev server must share a region."
+    }
   }
 }
 resource "aws_volume_attachment" "data" {
@@ -195,4 +201,7 @@ resource "aws_volume_attachment" "data" {
 output "instance_id" { value = aws_instance.dev.id }
 output "public_ip" { value = aws_instance.dev.public_ip }
 output "ssh_command" { value = "ssh ubuntu@${aws_instance.dev.public_ip}" }
-output "ami_id" { value = aws_instance.dev.ami }
+output "ami_id" {
+  value = aws_instance.dev.ami
+  sensitive = true
+}
