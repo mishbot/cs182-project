@@ -1,0 +1,72 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/qwen-bootstrap.log) 2>&1
+export DEBIAN_FRONTEND=noninteractive
+
+# The DLAMI supplies a tested NVIDIA driver. Stop Docker before moving its data root.
+systemctl stop docker.service docker.socket || true
+systemctl mask docker.service docker.socket
+apt-get update
+apt-get install -y ca-certificates curl gnupg jq
+if ! command -v aws >/dev/null; then
+  apt-get install -y awscli
+fi
+if ! command -v docker >/dev/null; then
+  apt-get install -y docker.io
+fi
+if ! command -v nvidia-ctk >/dev/null; then
+  curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | gpg --dearmor --yes -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  curl -fsSL https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list |
+    sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' > /etc/apt/sources.list.d/nvidia-container-toolkit.list
+  apt-get update
+  apt-get install -y nvidia-container-toolkit
+fi
+
+# Attachments are created after EC2 launch. Identify the volume by its NVMe serial,
+# never by enumeration order, to avoid formatting the root disk.
+VOLUME_SERIAL=$(printf '%s' '${volume_id}' | tr -d '-')
+DATA_DEVICE=""
+for attempt in $(seq 1 120); do
+  DATA_DEVICE=$(lsblk -dnpo NAME,SERIAL | awk -v serial="$VOLUME_SERIAL" '$2 == serial {print $1; exit}')
+  if [ -n "$DATA_DEVICE" ]; then break; fi
+  sleep 5
+done
+test -n "$DATA_DEVICE" || { echo 'Persistent volume did not attach within 10 minutes'; exit 1; }
+FILESYSTEM=$(blkid -s TYPE -o value "$DATA_DEVICE" || true)
+if [ -z "$FILESYSTEM" ]; then
+  # Refuse to format disks that have partitions or any other signature.
+  test "$(lsblk -npo NAME "$DATA_DEVICE" | wc -l)" -eq 1
+  test -z "$(wipefs --no-act --noheadings "$DATA_DEVICE")"
+  mkfs.ext4 "$DATA_DEVICE"
+else
+  test "$FILESYSTEM" = ext4
+fi
+DATA_UUID=$(blkid -s UUID -o value "$DATA_DEVICE")
+mkdir -p /mnt/qwen
+if ! grep -q "UUID=$DATA_UUID " /etc/fstab; then
+  printf 'UUID=%s /mnt/qwen ext4 defaults,nofail,x-systemd.device-timeout=120 0 2\n' "$DATA_UUID" >> /etc/fstab
+fi
+systemctl daemon-reload
+mountpoint -q /mnt/qwen || mount /mnt/qwen
+mkdir -p /mnt/qwen/docker /mnt/qwen/scratch /mnt/qwen/model-cache
+chown ubuntu:ubuntu /mnt/qwen/scratch /mnt/qwen/model-cache
+
+mkdir -p /etc/docker /etc/systemd/system/docker.service.d
+test -f /etc/docker/daemon.json || printf '{}\n' > /etc/docker/daemon.json
+jq '. + {"data-root": "/mnt/qwen/docker"}' /etc/docker/daemon.json > /etc/docker/daemon.json.new
+mv /etc/docker/daemon.json.new /etc/docker/daemon.json
+cat > /etc/systemd/system/docker.service.d/persistent-volume.conf <<'UNIT'
+[Unit]
+RequiresMountsFor=/mnt/qwen
+After=mnt-qwen.mount
+[Service]
+ExecStartPre=/usr/bin/mountpoint -q /mnt/qwen
+UNIT
+nvidia-smi
+nvidia-ctk runtime configure --runtime=docker
+usermod -aG docker ubuntu
+systemctl unmask docker.service docker.socket
+systemctl daemon-reload
+systemctl enable --now docker
+docker run --rm --gpus all nvidia/cuda:12.4.1-base-ubuntu22.04 nvidia-smi
+touch /var/lib/qwen-bootstrap.ready
