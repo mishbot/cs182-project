@@ -22,7 +22,8 @@ attachments, and IAM roles, inline policies, and instance profiles. It also need
 `iam:PassRole`, resource tagging, EC2 describe calls, and `ssm:GetParameter` for the
 public DLAMI parameter. The image publisher needs `ecr:GetAuthorizationToken` and
 repository upload/image permissions. Model and dataset seeding need `s3:ListBucket`,
-`s3:GetObject`, `s3:PutObject`, and multipart upload permissions on the model bucket.
+`s3:GetObject`, `s3:PutObject`, and multipart upload permissions on their respective
+model and datasets buckets.
 These operator permissions are separate from the server's narrowly scoped role.
 The deploying identity also needs AWS Budgets permissions to manage the budget,
 notifications, subscribers, and budget tags.
@@ -88,11 +89,11 @@ on this budget. New tag keys can take up to 24 hours to appear and up to another
 24 hours to activate. Charges without that tag are outside the filter. See
 [AWS's tag activation instructions](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/activating-tags.html).
 The AZ must remain fixed for this disk. Bucket names include the project, AWS
-account ID, and region. Outputs include both bucket names, the ECR URL, disk ID,
+account ID, and region. Outputs include all three bucket names, the ECR URL, disk ID,
 and the ready-to-export dev-server inputs.
 
 Buckets block public access, enforce TLS, use SSE-S3 encryption and bucket-owner
-ownership; the model bucket also retains previous object versions. The ECR
+ownership; the model and datasets buckets also retain previous object versions. The ECR
 repository has immutable tags. Buckets, ECR, and the disk have `prevent_destroy`
 guards and cannot be deleted by an ordinary persistent-stack destroy.
 
@@ -129,12 +130,13 @@ objects but consumers read the current published snapshot.
 
 ## Archive WildGuardMix
 
-Run this once from the workstation using the same virtual environment and
-`MODEL_BUCKET` as model seeding:
+Run this once from the workstation using the same virtual environment as model
+seeding and the dedicated datasets bucket:
 
 ```bash
+DATASET_BUCKET=$(tofu -chdir=infra/persistent output -raw dataset_bucket)
 AWS_DEFAULT_REGION="$REGION" .venv/bin/python infra/scripts/seed_dataset.py \
-  --bucket "$MODEL_BUCKET" --revision main --cache-dir .cache/huggingface
+  --bucket "$DATASET_BUCKET" --revision main --cache-dir .cache/huggingface
 ```
 
 The script resolves the requested revision to a full commit SHA before fetching
@@ -145,12 +147,18 @@ access requires authorization, obtain dataset access on Hugging Face and supply
 `HF_TOKEN` or use your existing Hugging Face login when seeding.
 
 The final stdout line is the dataset URI:
-`s3://BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA`. Save it for extraction. The
+`s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA`. Save it for extraction. The
 manifest preserves the revision, file sizes, SHA-256 checksums, split paths, and
 attribution; it is published after all files succeed. Published revisions cannot
 be overwritten; an interrupted upload without a manifest can be retried. Seeding
 does not install Git or the `datasets` package. Subsequent extraction reads the
 S3 snapshot, with no Hugging Face access or token needed at runtime.
+
+If a dataset snapshot was previously stored in the model bucket, seed the same
+`--revision FULL_COMMIT_SHA` into the datasets bucket and update `DATASET_URI`.
+Existing objects are not moved or deleted automatically. With operator credentials,
+you can also copy the snapshot's data files and dataset card first, then copy its
+completion manifest last.
 
 ## Deploy and connect to the dev server
 
@@ -171,8 +179,8 @@ tofu -chdir=infra/dev-server output -raw ssh_command
 ssh ubuntu@SERVER_PUBLIC_IP
 ```
 
-Required stack inputs are the seven exported persistent values (including
-`activation_bucket`) plus
+Required stack inputs are the eight exported persistent values (including
+`dataset_bucket` and `activation_bucket`) plus
 `ssh_public_key` and `ssh_cidr`. Optional inputs are `instance_type=g4dn.xlarge`
 and `ami_id` (a compatible Ubuntu 22.04 x86_64 DLAMI). By default, the AMI comes
 from AWS's public SSM parameter for the PyTorch 2.5 Ubuntu 22.04 NVIDIA-driver
@@ -180,7 +188,7 @@ DLAMI. Record the `ami_id` output and set it as an input to pin future launches;
 otherwise a newer public AMI can cause instance replacement on a later apply.
 
 The dev stack creates its own public subnet and internet gateway without a NAT
-gateway. Only SSH is allowed inbound. The instance role can read the model bucket
+gateway. Only SSH is allowed inbound. The instance role can read the model and datasets buckets
 and pull this ECR repository. It can upload objects and abort multipart uploads
 only in the activation bucket; it cannot modify model/dataset snapshots, read
 activations, or delete activation objects.
@@ -251,11 +259,13 @@ the local cache path. Use `--help` for either Python CLI without loading the mod
 
 ## Collect WildGuardMix activations
 
-For an existing deployment, refresh and export the persistent outputs to pick up
-the new `activation_bucket` input, then review and apply the dev-server policy:
+For an existing deployment, apply the persistent stack to create the dedicated
+datasets bucket, export its updated outputs, then review and apply the dev-server
+policy. This includes the `dataset_bucket` and `activation_bucket` inputs:
 
 ```bash
-tofu -chdir=infra/persistent apply -refresh-only
+tofu -chdir=infra/persistent plan
+tofu -chdir=infra/persistent apply
 tofu -chdir=infra/persistent output -json dev_server_inputs > infra/dev-server/persistent.auto.tfvars.json
 tofu -chdir=infra/dev-server plan
 tofu -chdir=infra/dev-server apply
@@ -268,7 +278,7 @@ and `IMAGE_TAG` as inference, the dataset URI printed by seeding, and the
 `activation_bucket` output from the persistent stack:
 
 ```bash
-DATASET_URI=s3://MODEL_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA
+DATASET_URI=s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA
 ACTIVATION_BUCKET=YOUR_ACTIVATION_BUCKET
 docker run --rm --gpus all --entrypoint python \
   -e AWS_DEFAULT_REGION="$REGION" \
@@ -445,7 +455,7 @@ The deployment checks require a real AWS account and incur charges:
    with a short prompt. Check that a missing S3 prefix produces a clear error.
 3. Write a file under `/mnt/qwen/scratch`, stop/destroy/recreate the server as
    described above, and verify both the file and cached image/model remain.
-4. Destroy the dev stack and confirm both buckets, ECR, and the EBS volume remain.
+4. Destroy the dev stack and confirm all three buckets, ECR, and the EBS volume remain.
 
 ## Costs and references
 

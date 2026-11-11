@@ -71,7 +71,7 @@ class MemoryS3:
 
 
 def dataset_snapshot(s3, train=b"train", test=b"test"):
-    s3.snapshot("artifacts", "dataset", {
+    s3.snapshot("datasets", "dataset", {
         dataset.SPLITS["train"]: train, dataset.SPLITS["test"]: test, "README.md": b"Attribution",
     }, dataset_id=dataset.DATASET_ID, revision="a" * 40, splits=dataset.SPLITS)
 
@@ -131,29 +131,29 @@ class DatasetCacheTest(unittest.TestCase):
         s3 = MemoryS3()
         dataset_snapshot(s3)
         with tempfile.TemporaryDirectory() as directory:
-            local = dataset.download_dataset(s3, "s3://artifacts/dataset", directory)
-            dataset.download_dataset(s3, "s3://artifacts/dataset", directory)
+            local = dataset.download_dataset(s3, "s3://datasets/dataset", directory)
+            dataset.download_dataset(s3, "s3://datasets/dataset", directory)
             self.assertEqual(len(s3.downloads), 3)
             (local / dataset.SPLITS["train"]).write_bytes(b"broken")
-            dataset.download_dataset(s3, "s3://artifacts/dataset", directory)
+            dataset.download_dataset(s3, "s3://datasets/dataset", directory)
             self.assertEqual(len(s3.downloads), 4)
             self.assertEqual((local / dataset.SPLITS["train"]).read_bytes(), b"train")
-            manifest_key = ("artifacts", f"dataset/{artifacts.MANIFEST}")
+            manifest_key = ("datasets", f"dataset/{artifacts.MANIFEST}")
             manifest = json.loads(s3.objects[manifest_key])
             manifest["revision"] = "b" * 40
             s3.objects[manifest_key] = json.dumps(manifest).encode()
             with self.assertRaisesRegex(ValueError, "manifest changed"):
-                dataset.download_dataset(s3, "s3://artifacts/dataset", directory)
+                dataset.download_dataset(s3, "s3://datasets/dataset", directory)
 
     def test_incomplete_snapshot_and_corrupt_remote_file_fail(self):
         s3 = MemoryS3()
         dataset_snapshot(s3)
         with tempfile.TemporaryDirectory() as directory:
-            s3.objects[("artifacts", f"dataset/{dataset.SPLITS['train']}")] = b"broken"
+            s3.objects[("datasets", f"dataset/{dataset.SPLITS['train']}")] = b"broken"
             with self.assertRaisesRegex(ValueError, "Checksum/size"):
-                dataset.download_dataset(s3, "s3://artifacts/dataset", directory)
+                dataset.download_dataset(s3, "s3://datasets/dataset", directory)
             self.assertFalse(list(Path(directory).rglob(artifacts.MANIFEST)))
-        manifest = json.loads(s3.objects[("artifacts", f"dataset/{artifacts.MANIFEST}")])
+        manifest = json.loads(s3.objects[("datasets", f"dataset/{artifacts.MANIFEST}")])
         manifest["files"] = [entry for entry in manifest["files"] if entry["path"] != "README.md"]
         with self.assertRaisesRegex(ValueError, "dataset card"):
             dataset.validate_dataset_manifest(manifest)
@@ -168,8 +168,8 @@ class DatasetSeedingTest(unittest.TestCase):
             fixture.write_text("fixture source")
             hub = SimpleNamespace(HfApi=MagicMock(), hf_hub_download=MagicMock(return_value=str(fixture)))
             hub.HfApi.return_value.dataset_info.return_value.sha = "a" * 40
-            uri = seed_dataset.seed_dataset(s3, "artifacts", "main", directory, hub)
-            self.assertEqual(uri, f"s3://artifacts/datasets/wildguardmix/{'a' * 40}")
+            uri = seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
+            self.assertEqual(uri, f"s3://datasets/datasets/wildguardmix/{'a' * 40}")
             self.assertEqual(len(s3.uploads), 4)
             self.assertTrue(s3.uploads[-1][1].endswith(artifacts.MANIFEST))
             for call in hub.hf_hub_download.call_args_list:
@@ -177,7 +177,7 @@ class DatasetSeedingTest(unittest.TestCase):
             manifest = json.loads(s3.objects[s3.uploads[-1]])
             self.assertEqual(manifest["attribution"]["source"], dataset.DATASET_URL)
             with self.assertRaisesRegex(ValueError, "already published"):
-                seed_dataset.seed_dataset(s3, "artifacts", "main", directory, hub)
+                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
             self.assertEqual(hub.hf_hub_download.call_count, 3)
 
     def test_failed_seed_never_publishes_completion(self):
@@ -189,7 +189,7 @@ class DatasetSeedingTest(unittest.TestCase):
             hub = SimpleNamespace(HfApi=MagicMock(), hf_hub_download=MagicMock(return_value=str(fixture)))
             hub.HfApi.return_value.dataset_info.return_value.sha = "a" * 40
             with self.assertRaisesRegex(OSError, "interrupted"):
-                seed_dataset.seed_dataset(s3, "artifacts", "main", directory, hub)
+                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
         self.assertFalse(any(key.endswith(artifacts.MANIFEST) for _, key in s3.objects))
 
 
@@ -314,7 +314,7 @@ class ExtractionTest(unittest.TestCase):
             dataset_snapshot(s3, buffer.getvalue().to_pybytes(), buffer.getvalue().to_pybytes())
             args = SimpleNamespace(
                 device="cpu", cache_dir=str(root / "cache"), model_s3_uri="s3://artifacts/model",
-                dataset_s3_uri="s3://artifacts/dataset", output_s3_uri="s3://activations/runs",
+                dataset_s3_uri="s3://datasets/dataset", output_s3_uri="s3://activations/runs",
                 split="train", sample_size=5, seed=0, batch_size=2, max_input_tokens=64,
             )
             uri = collect.collect(s3, args)

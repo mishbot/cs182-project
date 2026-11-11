@@ -12,6 +12,10 @@ run "persistent_resources" {
   command = plan
 
   assert {
+    condition     = contains(keys(aws_s3_bucket.storage), "datasets") && aws_s3_bucket_versioning.datasets.versioning_configuration[0].status == "Enabled"
+    error_message = "A dedicated versioned datasets bucket must exist."
+  }
+  assert {
     condition     = aws_ebs_volume.data.encrypted && aws_ebs_volume.data.size == 50 && aws_ebs_volume.data.type == "gp3"
     error_message = "The persistent data volume must be 50 GiB, encrypted gp3."
   }
@@ -21,15 +25,15 @@ run "persistent_resources" {
   }
   assert {
     condition     = alltrue([for block in aws_s3_bucket_public_access_block.storage : block.block_public_acls && block.block_public_policy && block.ignore_public_acls && block.restrict_public_buckets])
-    error_message = "Both buckets must block all public access."
+    error_message = "All three buckets must block all public access."
   }
   assert {
     condition     = aws_ecr_repository.runtime.image_tag_mutability == "IMMUTABLE"
     error_message = "Published image tags must be immutable."
   }
   assert {
-    condition     = contains(keys(output.dev_server_inputs), "activation_bucket")
-    error_message = "Export the activation bucket to the dev server."
+    condition     = alltrue([for name in ["activation_bucket", "dataset_bucket"] : contains(keys(output.dev_server_inputs), name)])
+    error_message = "Export the activation and dataset buckets to the dev server."
   }
 
   assert {

@@ -6,6 +6,10 @@ mock_provider "aws" {
     defaults = { region = "us-east-1", arn = "arn:aws:s3:::fixture-models" }
   }
   override_data {
+    target = data.aws_s3_bucket.datasets
+    values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-datasets" }
+  }
+  override_data {
     target = data.aws_s3_bucket.activations
     values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-activations" }
   }
@@ -18,6 +22,7 @@ variables {
   availability_zone = "us-east-1a"
   project           = "fixture-qwen"
   model_bucket      = "fixture-models"
+  dataset_bucket    = "fixture-datasets"
   activation_bucket = "fixture-activations"
   ecr_repository    = "fixture-runtime"
   data_volume_id    = "vol-0123456789abcdef0"
@@ -29,6 +34,10 @@ variables {
 run "dev_resources" {
   command = plan
 
+  assert {
+    condition     = toset(jsondecode(aws_iam_role_policy.read.policy).Statement[1].Resource) == toset(["arn:aws:s3:::fixture-models/*", "arn:aws:s3:::fixture-datasets/*"]) && toset(jsondecode(aws_iam_role_policy.read.policy).Statement[1].Action) == toset(["s3:GetObject"])
+    error_message = "The server must have read-only object access to the model and dataset buckets."
+  }
   assert {
     condition     = aws_instance.dev.instance_type == "g4dn.xlarge" && aws_instance.dev.associate_public_ip_address
     error_message = "Default server must be a public g4dn.xlarge."
@@ -69,4 +78,13 @@ run "reject_public_ssh" {
     ssh_cidr = "0.0.0.0/0"
   }
   expect_failures = [var.ssh_cidr]
+}
+
+run "reject_dataset_in_wrong_region" {
+  command = plan
+  override_data {
+    target = data.aws_s3_bucket.datasets
+    values = { region = "us-west-2", arn = "arn:aws:s3:::fixture-datasets" }
+  }
+  expect_failures = [aws_instance.dev]
 }

@@ -49,20 +49,21 @@ data "aws_availability_zone" "selected" {
 }
 
 locals {
-  prefix = "${var.project}-${data.aws_caller_identity.current.account_id}-${var.region}"
+  prefix          = "${var.project}-${data.aws_caller_identity.current.account_id}-${var.region}"
+  storage_buckets = toset(["models", "datasets", "activations"])
 }
 
 resource "aws_s3_bucket" "storage" {
-  for_each      = toset(["models", "activations"])
+  for_each      = local.storage_buckets
   bucket        = "${local.prefix}-${each.key}"
   force_destroy = false
-  lifecycle {
-    prevent_destroy = true
-  }
+  # lifecycle {
+  #   prevent_destroy = true
+  # }
 }
 
 resource "aws_s3_bucket_public_access_block" "storage" {
-  for_each                = toset(["models", "activations"])
+  for_each                = local.storage_buckets
   bucket                  = aws_s3_bucket.storage[each.key].id
   block_public_acls       = true
   block_public_policy     = true
@@ -71,7 +72,7 @@ resource "aws_s3_bucket_public_access_block" "storage" {
 }
 
 resource "aws_s3_bucket_ownership_controls" "storage" {
-  for_each = toset(["models", "activations"])
+  for_each = local.storage_buckets
   bucket   = aws_s3_bucket.storage[each.key].id
   rule {
     object_ownership = "BucketOwnerEnforced"
@@ -79,7 +80,7 @@ resource "aws_s3_bucket_ownership_controls" "storage" {
 }
 
 resource "aws_s3_bucket_server_side_encryption_configuration" "storage" {
-  for_each = toset(["models", "activations"])
+  for_each = local.storage_buckets
   bucket   = aws_s3_bucket.storage[each.key].id
   rule {
     apply_server_side_encryption_by_default {
@@ -95,8 +96,15 @@ resource "aws_s3_bucket_versioning" "models" {
   }
 }
 
+resource "aws_s3_bucket_versioning" "datasets" {
+  bucket = aws_s3_bucket.storage["datasets"].id
+  versioning_configuration {
+    status = "Enabled"
+  }
+}
+
 resource "aws_s3_bucket_policy" "tls" {
-  for_each = toset(["models", "activations"])
+  for_each = local.storage_buckets
   bucket   = aws_s3_bucket.storage[each.key].id
   policy = jsonencode({
     Version = "2012-10-17"
@@ -166,6 +174,7 @@ output "dev_server_inputs" {
     availability_zone = aws_ebs_volume.data.availability_zone
     project           = var.project
     model_bucket      = aws_s3_bucket.storage["models"].id
+    dataset_bucket    = aws_s3_bucket.storage["datasets"].id
     activation_bucket = aws_s3_bucket.storage["activations"].id
     ecr_repository    = aws_ecr_repository.runtime.name
     data_volume_id    = aws_ebs_volume.data.id
@@ -173,6 +182,7 @@ output "dev_server_inputs" {
 }
 
 output "model_bucket" { value = aws_s3_bucket.storage["models"].id }
+output "dataset_bucket" { value = aws_s3_bucket.storage["datasets"].id }
 output "activation_bucket" { value = aws_s3_bucket.storage["activations"].id }
 output "repository_url" { value = aws_ecr_repository.runtime.repository_url }
 output "data_volume_id" { value = aws_ebs_volume.data.id }
