@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Project
+.DS_Store
+.python-version
+data/
+qwen_obfuscated_lora/
