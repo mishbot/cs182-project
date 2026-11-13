@@ -1,4 +1,5 @@
 """Shared Qwen loaders, generation, and activation readers. Used by the defense and the attack."""
+import os
 import warnings
 
 import torch as th
@@ -15,6 +16,17 @@ warnings.filterwarnings("ignore", message="MPS: no support for int64 repeats mas
 # Model loading
 # ---------------------------------------------------------------------------
 
+def model_path(model_id=MODEL_ID):
+    """Local directory of the model files. Reads the cache without contacting ModelScope when it can:
+    an online snapshot_download lists the repo on every call, and ModelScope rate-limits that API."""
+    try:
+        path = snapshot_download(model_id, cache_dir=CACHE_DIR, local_files_only=True)
+        if os.path.exists(os.path.join(path, "config.json")):
+            return path
+    except Exception:
+        pass
+    return snapshot_download(model_id, cache_dir=CACHE_DIR)
+
 def load_tokenizer(model_dir):
     tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
     tok.pad_token = PAD_TOKEN          # Qwen-1 has no pad token by default
@@ -23,7 +35,7 @@ def load_tokenizer(model_dir):
 def load_for_training(model_id=MODEL_ID, device=DEVICE):
     """bf16 on Ampere+ GPUs, fp32 otherwise (fp16 training is unstable).
     Flash attention is off: Qwen-1's flash path and padded batches don't mix well."""
-    model_dir = snapshot_download(model_id, cache_dir=CACHE_DIR)
+    model_dir = model_path(model_id)
     tok = load_tokenizer(model_dir)
     use_bf16 = device == "cuda" and th.cuda.is_bf16_supported()
     model = AutoModelForCausalLM.from_pretrained(
@@ -43,7 +55,7 @@ class LLM:
 
     def __init__(self, model_id=MODEL_ID, device=DEVICE, model=None, tokenizer=None):
         if model is None:
-            model_dir = snapshot_download(model_id, cache_dir=CACHE_DIR)
+            model_dir = model_path(model_id)
             tokenizer = load_tokenizer(model_dir)
             model = AutoModelForCausalLM.from_pretrained(
                 model_dir,
@@ -77,24 +89,34 @@ class LLM:
 
 @th.no_grad()
 def generate(model, tok, instructions, max_new_tokens=64, batch_size=16):
-    """Greedy completions with the chat template (left padding for generation)."""
+    """Greedy completions with the chat template, returned in input order.
+
+    Prompts are batched by exact token length, so no batch is padded. With left padding, the leading
+    pad positions have nothing to attend to, and torch 2.2's default CUDA attention kernel returns NaN
+    for them in bf16 and fp32. The NaN spreads to the real tokens and the row decodes as '!!!!'.
+    common/debug.py reproduces this. Unpadded batches also give the same output as single prompts.
+    """
     model.eval()
-    tok.padding_side = "left"
-    outs = []
-    for i in range(0, len(instructions), batch_size):
-        prompts = [PROMPT_TEMPLATE.format(instruction=x) for x in instructions[i:i + batch_size]]
-        enc = tok(prompts, return_tensors="pt", padding=True).to(model.device)
-        gen = model.generate(
-            input_ids=enc.input_ids,
-            attention_mask=enc.attention_mask,
-            max_new_tokens=max_new_tokens,
-            do_sample=False,
-            use_cache=True,
-            eos_token_id=[tok.im_end_id, tok.eod_id],
-            pad_token_id=tok.pad_token_id,
-        )
-        for g in gen[:, enc.input_ids.shape[1]:]:
-            outs.append(tok.decode(g, skip_special_tokens=True).strip())
+    seqs = [tok.encode(PROMPT_TEMPLATE.format(instruction=x)) for x in instructions]
+    by_len = {}
+    for i, s in enumerate(seqs):
+        by_len.setdefault(len(s), []).append(i)
+    outs = [None] * len(seqs)
+    for idxs in by_len.values():
+        for j in range(0, len(idxs), batch_size):
+            chunk = idxs[j:j + batch_size]
+            ids = th.tensor([seqs[i] for i in chunk], device=model.device)
+            gen = model.generate(
+                input_ids=ids,
+                attention_mask=th.ones_like(ids),
+                max_new_tokens=max_new_tokens,
+                do_sample=False,
+                use_cache=True,
+                eos_token_id=[tok.im_end_id, tok.eod_id],
+                pad_token_id=tok.pad_token_id,
+            )
+            for i, g in zip(chunk, gen[:, ids.shape[1]:]):
+                outs[i] = tok.decode(g, skip_special_tokens=True).strip()
     return outs
 
 # ---------------------------------------------------------------------------

@@ -1,2 +1,53 @@
-# cs182-project
-Final project for CS 182, Fall 2026.
+# Can probe obfuscation protect refusal against a targeted weight edit?
+
+CS 182/282 final project, Fall 2026.
+
+Arditi et al. remove refusal from chat models by ablating one direction: the difference between mean activations on harmful and harmless prompts. We fine-tune Qwen-1.8B-Chat so those activations are hard to tell apart, then re-run the same weight edit and measure how much harmful compliance rises.
+
+## Layout
+
+```
+config.py       global settings: model, prompt template, training config, Modal names
+modal_app.py    Modal entry points: download_model, smoke_test, train
+common/         shared by all roles: Qwen loader, generation, activations, data splits, refusal scoring
+defense/        defender fine-tuning: losses, training loop, fresh-probe evaluation
+attack/         weight-edit attack
+knowledge/      proposals and the course project doc
+```
+
+AWS infrastructure lives on the `reproduce-weight-orthogonalization` branch under `infra/`.
+
+## Setup
+
+Python 3.11.
+
+```bash
+pip install -r requirements.txt
+pip install modal && modal setup
+```
+
+## Run
+
+```bash
+modal run modal_app.py::download_model                       # once: cache Qwen in a Modal Volume
+modal run modal_app.py                                       # smoke test on a GPU
+modal run modal_app.py::train --run-name dry-run --dry-run   # 20-step check of the training loop
+modal run --detach modal_app.py::train --run-name v1         # full defender run
+```
+
+Data splits are written once to `/runs/data` on the `cs182-runs` Volume and reused by every run. Each run writes `metrics.jsonl`, `summary.json`, the LoRA adapter and `merged/` (full fp16 weights for the attack) to `/runs/<run-name>`. Fetch results with `modal volume get cs182-runs <run-name>/summary.json .` To train locally instead, run `python -m defense.train` from the repo root.
+
+## Team
+
+| Role | Owner |
+|---|---|
+| Defender fine-tuning | Luc Rathbun, Mihail Dimitrov |
+| Attack replication | Peter Van Donovan, Yahu Cong |
+| Model and synthesis | unassigned |
+| Evaluation | unassigned |
+
+## References
+
+- Arditi et al. (2024). [Refusal in Language Models Is Mediated by a Single Direction](https://arxiv.org/abs/2406.11717)
+- Bailey et al. (2024). [Obfuscated Activations Bypass LLM Latent-Space Defenses](https://arxiv.org/abs/2412.09565)
+- Tamirisa et al. (2024). [Tamper-Resistant Safeguards for Open-Weight LLMs](https://arxiv.org/abs/2408.00761)

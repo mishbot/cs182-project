@@ -1,4 +1,14 @@
-"""Defender fine-tuning loop. Run from the project root: python -m defense.train"""
+"""Defender fine-tuning loop. Run from the project root: python -m defense.train
+
+Everything a run produces goes to cfg["out_dir"]:
+    metrics.jsonl   one line per logged training step and per evaluation
+    summary.json    config, data counts, baseline and final evaluation, fresh-probe AUROC, export check
+    step<N>/        LoRA adapter checkpoints
+    adapter_*       final LoRA adapter
+    merged/         full merged model in fp16, for the weight-edit attack
+"""
+import json
+import os
 import random
 
 import torch as th
@@ -6,10 +16,11 @@ from peft import LoraConfig, get_peft_model
 
 from common.data import collate, load_instructions, prepare_data
 from common.evaluate import is_refusal
-from common.models import eoi_positions, gather_resid, generate, load_for_training, prompt_acts
-from config import DEFENSE_CFG, EOI_STR
+from common.models import eoi_positions, gather_resid, generate, load_for_training, model_path, prompt_acts
+from config import DEFENSE_CFG, EOI_STR, PROMPT_TEMPLATE
 from defense.data import make_examples
 from defense.evaluate import evaluate, probe_auroc_per_layer
+from defense.export import export_merged
 from defense.losses import mean_gap_loss, refusal_loss, retain_loss
 
 def training_step(model, harm_batch, benign_batch, step, cfg):
@@ -35,7 +46,21 @@ def training_step(model, harm_batch, benign_batch, step, cfg):
             "L_obf": L_obf.item(), "lambda": lam}
     return loss, logs
 
+def _append(path, record):
+    with open(path, "a") as f:
+        f.write(json.dumps(record) + "\n")
+
+def _write(path, obj):
+    with open(path, "w") as f:
+        json.dump(obj, f, indent=2)
+
 def train(cfg=DEFENSE_CFG):
+    cfg = dict(cfg)
+    os.makedirs(cfg["out_dir"], exist_ok=True)
+    metrics_path = os.path.join(cfg["out_dir"], "metrics.jsonl")
+    summary_path = os.path.join(cfg["out_dir"], "summary.json")
+    open(metrics_path, "w").close()         # a rerun with the same name starts a fresh log
+
     random.seed(cfg["seed"])
     th.manual_seed(cfg["seed"])
     model, tok = load_for_training()
@@ -78,7 +103,12 @@ def train(cfg=DEFENSE_CFG):
     model.print_trainable_parameters()
     opt = th.optim.AdamW([p for p in model.parameters() if p.requires_grad], lr=cfg["lr"])
 
-    print("baseline:", evaluate(model, tok, harm_val, ben_val, cfg))
+    summary = {"config": cfg, "n_harmful_train": len(harm_train), "n_harmful_kept": len(kept),
+               "n_harmless_train": len(ben_train)}
+    summary["baseline"] = evaluate(model, tok, harm_val, ben_val, cfg)
+    print("baseline:", summary["baseline"])
+    _append(metrics_path, {"kind": "eval", "step": 0, **summary["baseline"]})
+    _write(summary_path, summary)
 
     # ---- train ----
     B = cfg["batch_per_class"]
@@ -95,17 +125,37 @@ def train(cfg=DEFENSE_CFG):
 
         if step % cfg["log_every"] == 0:
             print(step, {k: round(v, 4) for k, v in logs.items()})
+            _append(metrics_path, {"kind": "train", "step": step, **logs})
         if step > 0 and step % cfg["eval_every"] == 0:
-            print(f"eval @ {step}:", evaluate(model, tok, harm_val, ben_val, cfg))
+            res = evaluate(model, tok, harm_val, ben_val, cfg)
+            print(f"eval @ {step}:", res)
+            _append(metrics_path, {"kind": "eval", "step": step, **res})
             model.save_pretrained(f"{cfg['out_dir']}/step{step}")
 
-    print("final:", evaluate(model, tok, harm_val, ben_val, cfg))
+    summary["final"] = evaluate(model, tok, harm_val, ben_val, cfg)
+    print("final:", summary["final"])
+    _append(metrics_path, {"kind": "eval", "step": cfg["steps"], **summary["final"]})
     model.save_pretrained(cfg["out_dir"])
 
     # ---- Q1: fresh linear probes on the obfuscated model ----
     acts_h = prompt_acts(model, tok, harm_val, cfg["layers"], cfg["n_eoi"])
     acts_b = prompt_acts(model, tok, ben_val, cfg["layers"], cfg["n_eoi"])
-    print("probe AUROC per layer:", [round(a, 3) for a in probe_auroc_per_layer(acts_h, acts_b)])
+    summary["probe_auroc_per_layer"] = [round(float(a), 4) for a in probe_auroc_per_layer(acts_h, acts_b)]
+    print("probe AUROC per layer:", [round(a, 3) for a in summary["probe_auroc_per_layer"]])
+    _write(summary_path, summary)
+
+    # ---- merged weights for the attack. A failure here must not lose the results above. ----
+    if cfg.get("export_merged", True):
+        try:
+            check_ids = th.tensor([tok.encode(PROMPT_TEMPLATE.format(instruction=harm_val[0]))], device=model.device)
+            merged_dir = os.path.join(cfg["out_dir"], "merged")
+            model, diff = export_merged(model, tok, model_path(), merged_dir, check_ids)
+            summary["merged"] = {"path": merged_dir, "max_logit_diff_vs_adapter": round(diff, 5)}
+            print(f"merged weights saved to {merged_dir} (max logit diff vs adapter model: {diff:.4f})")
+        except Exception as e:
+            summary["merged"] = {"error": f"{type(e).__name__}: {e}"}
+            print("merged export FAILED; the adapter is saved, rerun with modal_app.py::export. Error:", summary["merged"]["error"])
+        _write(summary_path, summary)
     return model, tok
 
 if __name__ == "__main__":

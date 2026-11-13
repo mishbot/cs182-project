@@ -43,7 +43,20 @@ DEFENSE_CFG = dict(
     eval_every=250,
     n_val=128,
     out_dir="qwen_obfuscated_lora",
+    export_merged=True,     # also save full merged fp16 weights to <out_dir>/merged for the attack
     seed=0,
+)
+
+# Overrides for a short end-to-end check: reaches full lambda, one mid-run eval and
+# checkpoint, the final eval, and the fresh-probe AUROC. Minutes instead of hours.
+DRY_RUN_CFG = dict(
+    steps=20,
+    warmup_steps=5,
+    ramp_steps=5,
+    log_every=2,
+    eval_every=10,
+    n_harmless_train=64,
+    n_val=32,
 )
 
 # Modal
@@ -52,3 +65,5 @@ GPU = "A100-80GB"               # full fine-tuning of 1.8B params with Adam need
 PYTHON_VERSION = "3.11"         # matches the local environment
 MODELS_VOLUME = "cs182-models"  # Volume that caches the Qwen weights
 MODELS_DIR = "/models"          # where that Volume is mounted inside Modal containers
+RUNS_VOLUME = "cs182-runs"      # Volume for the prepared data splits and training outputs
+RUNS_DIR = "/runs"              # where that Volume is mounted inside Modal containers
