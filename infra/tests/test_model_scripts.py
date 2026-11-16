@@ -209,7 +209,12 @@ class GenerationTest(unittest.TestCase):
         )
         self.transformers.AutoTokenizer.from_pretrained.return_value = self.tokenizer
         self.transformers.AutoModelForCausalLM.from_pretrained.return_value = self.model
-        self.modules = patch.dict(sys.modules, {"torch": self.torch, "transformers": self.transformers})
+        self.modules = patch.dict(sys.modules, {
+            "torch": self.torch,
+            "transformers": self.transformers,
+            "transformers.models.auto.modeling_auto": self.transformers,
+            "transformers.models.auto.tokenization_auto": self.transformers,
+        })
         self.modules.start()
         self.addCleanup(self.modules.stop)
 
