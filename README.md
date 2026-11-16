@@ -51,3 +51,12 @@ Data splits are written once to `/runs/data` on the `cs182-runs` Volume and reus
 - Arditi et al. (2024). [Refusal in Language Models Is Mediated by a Single Direction](https://arxiv.org/abs/2406.11717)
 - Bailey et al. (2024). [Obfuscated Activations Bypass LLM Latent-Space Defenses](https://arxiv.org/abs/2412.09565)
 - Tamirisa et al. (2024). [Tamper-Resistant Safeguards for Open-Weight LLMs](https://arxiv.org/abs/2408.00761)
+
+## CS182_project and infra usage
+
+See [infra/README.md](infra/README.md) for the Qwen GPU development environment.
+
+Python core functionality lives in the installable `cs182_project` package.
+Use `uv sync --locked` for the library, `--extra seed` for archival, or
+`--extra runtime` for inference and activations. Run scripts with `uv run`
+and the corresponding extra. See the infrastructure README for examples.

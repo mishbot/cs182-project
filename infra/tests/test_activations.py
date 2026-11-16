@@ -12,11 +12,10 @@ from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import collect_activations as collect
-import dataset_artifacts as dataset
-import model_artifacts as artifacts
-import seed_dataset
+from cs182_project import activations as collect
+from cs182_project import dataset_artifacts as dataset
+from cs182_project import model_artifacts as artifacts
+from cs182_project import seeding as seed_dataset
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
 ML_AVAILABLE = all(importlib.util.find_spec(name) for name in ["torch", "transformers", "pyarrow"])
@@ -317,7 +316,7 @@ class ExtractionTest(unittest.TestCase):
                 dataset_s3_uri="s3://datasets/dataset", output_s3_uri="s3://activations/runs",
                 split="train", sample_size=5, seed=0, batch_size=2, max_input_tokens=64,
             )
-            uri = collect.collect(s3, args)
+            uri = collect.collect(s3, **vars(args))
             manifest = json.loads(s3.objects[("activations", uri.split("activations/", 1)[1])])
             self.assertEqual(manifest["class_counts"], {"harmful": 3, "unharmful": 2})
             self.assertEqual(manifest["num_layers"], 2)
@@ -330,7 +329,7 @@ class ExtractionTest(unittest.TestCase):
             args.max_input_tokens = 2
             with patch("transformers.AutoModelForCausalLM.from_pretrained") as load:
                 with self.assertRaisesRegex(ValueError, "Source row"):
-                    collect.collect(s3, args)
+                    collect.collect(s3, **vars(args))
                 load.assert_not_called()
             self.assertEqual(len(s3.uploads), uploads)
 

@@ -1,7 +1,11 @@
 *
+!pyproject.toml
+!uv.lock
+!README.md
+!cs182_project/
+!cs182_project/*.py
 !infra/
 !infra/container/
 !infra/container/Dockerfile
-!infra/container/requirements.txt
 !infra/scripts/
 !infra/scripts/*.py
