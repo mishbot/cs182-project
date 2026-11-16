@@ -1,13 +1,17 @@
 FROM python:3.11.12-slim-bookworm
 
+COPY --from=ghcr.io/astral-sh/uv:0.10.4 /uv /bin/uv
 ENV PYTHONUNBUFFERED=1 \
-    PIP_NO_CACHE_DIR=1 \
+    UV_NO_CACHE=1 \
+    UV_PYTHON_DOWNLOADS=never \
+    PATH="/app/.venv/bin:$PATH" \
     HF_HUB_DISABLE_TELEMETRY=1 \
     TOKENIZERS_PARALLELISM=false
 WORKDIR /app
-# CUDA wheels also run on CPU; the host supplies the NVIDIA driver for GPU use.
-RUN pip install --index-url https://download.pytorch.org/whl/cu124 torch==2.6.0
-COPY infra/container/requirements.txt /app/requirements.txt
-RUN pip install -r requirements.txt
+COPY pyproject.toml uv.lock README.md /app/
+# Cache dependencies separately from project code. CUDA wheels also run on CPU.
+RUN uv sync --locked --extra runtime --no-dev --no-install-project
+COPY cs182_project /app/cs182_project
+RUN uv sync --locked --extra runtime --no-dev --no-editable
 COPY infra/scripts/*.py /app/
 ENTRYPOINT ["python", "/app/infer.py"]

@@ -9,8 +9,9 @@ The model is `Qwen/Qwen1.5-1.8B-Chat`, revision
 
 ## Prerequisites and permissions
 
-Use OpenTofu >= 1.8, AWS CLI >= 2.32.0, Docker with an x86_64 Linux build target, Python >= 3.10,
-and AWS credentials in the normal CLI/SDK credential chain. The image pins Python
+Use OpenTofu >= 1.8, AWS CLI >= 2.32.0, Docker with an x86_64 Linux build target,
+uv >= 0.10.4, Python >= 3.10, and AWS credentials in the normal CLI/SDK credential
+chain. The image pins Python
 3.11.12, PyTorch 2.6.0 with CUDA 12.4, Transformers 4.51.3, and PyArrow 19.0.1. Its CUDA wheels also
 support CPU inference; allow at least 16 GiB host RAM and several GB for downloads.
 Running a build from an ARM host requires Docker's amd64 emulation support.
@@ -30,6 +31,46 @@ notifications, subscribers, and budget tags.
 
 Ensure your account has a sufficient **Running On-Demand G and VT instances** vCPU
 quota (at least 4) and that `g4dn.xlarge` capacity exists in the selected AZ.
+
+## Python library and local setup
+
+The installable distribution is `cs182-project`, imported as `cs182_project`.
+Core snapshot, seeding, inference, and activation functionality lives in the
+root-level package. `infra/scripts/*.py` provides argument parsing, client setup,
+and terminal output. Install the project before running those scripts directly.
+
+From the repository root:
+
+```bash
+uv sync --locked                  # Editable library, no AWS or ML dependencies
+uv sync --locked --extra seed     # Add AWS and Hugging Face archival dependencies
+uv sync --locked --extra runtime  # Add PyTorch, Transformers, and Parquet
+uv run --locked --extra runtime python infra/scripts/infer.py --help
+```
+
+The repository selects Python 3.11.12 with `.python-version`, matching Docker.
+The library supports Python >= 3.10; the pinned ML wheels require a compatible
+Python version and platform. `uv.lock` records dependencies for reproducible
+installs. Include the appropriate extra with `uv run` so its environment sync
+retains the dependencies needed by the command. On Linux x86_64, the runtime
+extra uses PyTorch's CUDA 12.4 wheels, which also support CPU execution; other
+platforms use PyPI's PyTorch distribution.
+
+Library functions accept ordinary Python parameters and an S3 client rather than
+parsed command-line arguments. For example, after installing the `seed` extra:
+
+```python
+import boto3
+from cs182_project.seeding import seed_dataset
+
+uri = seed_dataset(boto3.client("s3"), bucket="YOUR_DATASET_BUCKET", revision="main")
+print(uri)
+```
+
+Use `cs182_project.inference.generate` for a local model snapshot, or
+`cs182_project.activations.collect` with explicit keyword arguments for an S3
+activation run. Functions return results and raise exceptions; progress uses
+standard Python logging. CLI adapters configure logging to stderr.
 
 ## Authenticate your workstation
 
@@ -106,9 +147,8 @@ MODEL_BUCKET=$(tofu -chdir=infra/persistent output -raw model_bucket)
 IMAGE_TAG="dev-$(git rev-parse HEAD | cut -c1-7)"
 bash infra/scripts/build-and-push.sh "$REGION" "$REPOSITORY" "$IMAGE_TAG"
 
-python3 -m venv .venv
-.venv/bin/pip install boto3==1.38.23 huggingface-hub==0.30.2
-AWS_DEFAULT_REGION="$REGION" .venv/bin/python infra/scripts/seed_model.py \
+uv sync --locked --extra seed
+AWS_DEFAULT_REGION="$REGION" uv run --locked --extra seed python infra/scripts/seed_model.py \
   --bucket "$MODEL_BUCKET" --cache-dir .cache/huggingface
 ```
 
@@ -130,12 +170,12 @@ objects but consumers read the current published snapshot.
 
 ## Archive WildGuardMix
 
-Run this once from the workstation using the same virtual environment as model
+Run this once from the workstation using the same uv environment as model
 seeding and the dedicated datasets bucket:
 
 ```bash
 DATASET_BUCKET=$(tofu -chdir=infra/persistent output -raw dataset_bucket)
-AWS_DEFAULT_REGION="$REGION" .venv/bin/python infra/scripts/seed_dataset.py \
+AWS_DEFAULT_REGION="$REGION" uv run --locked --extra seed python infra/scripts/seed_dataset.py \
   --bucket "$DATASET_BUCKET" --revision main --cache-dir .cache/huggingface
 ```
 
@@ -428,11 +468,11 @@ tofu -chdir=infra/persistent test
 tofu -chdir=infra/dev-server test
 bash -n infra/scripts/build-and-push.sh
 bash -n infra/scripts/aws-login.sh
-python3 -m unittest discover -s infra/tests -v
-python3 infra/scripts/infer.py --help
-python3 infra/scripts/seed_model.py --help
-python3 infra/scripts/seed_dataset.py --help
-python3 infra/scripts/collect_activations.py --help
+uv run --locked python -m unittest discover -s infra/tests -v
+uv run --locked python infra/scripts/infer.py --help
+uv run --locked python infra/scripts/seed_model.py --help
+uv run --locked python infra/scripts/seed_dataset.py --help
+uv run --locked python infra/scripts/collect_activations.py --help
 ```
 
 OpenTofu tests use a mocked provider and never create AWS resources. Python tests

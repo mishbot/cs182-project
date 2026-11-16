@@ -2,7 +2,7 @@
 
 from contextlib import nullcontext
 import hashlib
-import importlib
+import importlib.util
 import io
 import json
 from pathlib import Path
@@ -14,10 +14,15 @@ import unittest
 from unittest.mock import MagicMock, patch
 
 SCRIPTS = Path(__file__).resolve().parents[1] / "scripts"
-sys.path.insert(0, str(SCRIPTS))
-import infer
-import model_artifacts as artifacts
-import seed_model
+from cs182_project import inference
+from cs182_project import activations
+from cs182_project import model_artifacts as artifacts
+from cs182_project import seeding as seed_model
+
+# Load the CLI only for interface tests; core tests import the installed package.
+spec = importlib.util.spec_from_file_location("infer_cli", SCRIPTS / "infer.py")
+infer = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(infer)
 
 
 class FakeS3:
@@ -136,6 +141,54 @@ class CliTest(unittest.TestCase):
             self.assertIn("Inference failed: AccessDenied", stderr.getvalue())
 
 
+class LibraryBoundaryTest(unittest.TestCase):
+    def test_installed_imports_and_help_without_optional_dependencies(self):
+        # An isolated interpreter outside the checkout must use the installation.
+        # Block optional imports even when this test runs in the full ML image.
+        code = '''
+import importlib.abc
+import runpy
+import sys
+
+class NoOptionalDependencies(importlib.abc.MetaPathFinder):
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname.split(".")[0] in {"torch", "transformers", "pyarrow", "boto3", "botocore", "huggingface_hub"}:
+            raise ImportError("optional dependency imported: " + fullname)
+
+sys.meta_path.insert(0, NoOptionalDependencies())
+from cs182_project import activations, dataset_artifacts, inference, model_artifacts, seeding
+if len(sys.argv) > 1:
+    script = sys.argv[1]
+    sys.argv = sys.argv[1:]
+    runpy.run_path(script, run_name="__main__")
+'''
+        with tempfile.TemporaryDirectory() as directory:
+            for script in [None, "infer.py", "seed_model.py", "seed_dataset.py", "collect_activations.py"]:
+                with self.subTest(script=script):
+                    command = [sys.executable, "-I", "-c", code]
+                    if script:
+                        command += [str(SCRIPTS / script), "--help"]
+                    result = subprocess.run(command, cwd=directory, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_direct_library_calls_validate_before_loading_dependencies(self):
+        with self.assertRaisesRegex(ValueError, "prompt must not be empty"):
+            inference.generate("/unused", " ", 1, "cpu")
+        with self.assertRaisesRegex(ValueError, "between 1 and 4096"):
+            inference.generate("/unused", "hello", 0, "cpu")
+        with self.assertRaisesRegex(ValueError, "commit SHA"):
+            seed_model.seed_model(object(), "bucket", revision="main")
+        options = dict(model_s3_uri="s3://models/snapshot", dataset_s3_uri="s3://datasets/snapshot",
+                       output_s3_uri="s3://activations/runs", sample_size=2)
+        for override, message in [({"sample_size": 1}, "sample-size"),
+                                  ({"batch_size": 0}, "batch-size"),
+                                  ({"split": "invalid"}, "split must"),
+                                  ({"device": "invalid"}, "device must"),
+                                  ({"output_s3_uri": "https://invalid"}, "S3 location")]:
+            with self.subTest(override=override), self.assertRaisesRegex(ValueError, message):
+                activations.collect(object(), **(options | override))
+
+
 class GenerationTest(unittest.TestCase):
     def setUp(self):
         self.torch = MagicMock()
@@ -161,7 +214,7 @@ class GenerationTest(unittest.TestCase):
         self.addCleanup(self.modules.stop)
 
     def test_chat_template_response_slicing_and_cpu_fallback(self):
-        infer.generate("/snapshot", "hello", 10, "auto")
+        inference.generate("/snapshot", "hello", 10, "auto")
         self.model.to.assert_called_once_with("cpu")
         self.tokenizer.apply_chat_template.assert_called_once_with(
             [{"role": "user", "content": "hello"}], tokenize=False, add_generation_prompt=True,
@@ -173,20 +226,31 @@ class GenerationTest(unittest.TestCase):
 
     def test_auto_uses_gpu_and_explicit_cuda_fails_without_one(self):
         with self.assertRaisesRegex(ValueError, "CUDA requested"):
-            infer.generate("/snapshot", "hello", 10, "cuda")
+            inference.generate("/snapshot", "hello", 10, "cuda")
         self.torch.cuda.is_available.return_value = True
-        infer.generate("/snapshot", "hello", 10, "auto")
+        inference.generate("/snapshot", "hello", 10, "auto")
         self.model.to.assert_called_once_with("cuda")
         self.assertEqual(self.transformers.AutoModelForCausalLM.from_pretrained.call_args.kwargs["torch_dtype"], self.torch.float16)
 
     def test_context_overflow_fails_before_generation(self):
         self.model.config.max_position_embeddings = 5
         with self.assertRaisesRegex(ValueError, "context window"):
-            infer.generate("/snapshot", "hello", 10, "cpu")
+            inference.generate("/snapshot", "hello", 10, "cpu")
         self.model.generate.assert_not_called()
 
 
 class SeedingTest(unittest.TestCase):
+    def test_model_download_orchestration_is_in_library(self):
+        download = MagicMock(return_value="/snapshot")
+        client = object()
+        with patch.dict(sys.modules, {"huggingface_hub": types.SimpleNamespace(snapshot_download=download)}), \
+                patch.object(seed_model, "seed", return_value="s3://models/snapshot") as publish:
+            result = seed_model.seed_model(client, "models", prefix="/snapshot/", cache_dir="/hf-cache")
+        self.assertEqual(result, "s3://models/snapshot")
+        download.assert_called_once_with(repo_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION,
+                                         cache_dir="/hf-cache")
+        publish.assert_called_once_with(client, "/snapshot", "models", "snapshot", artifacts.MODEL_REVISION)
+
     def test_uploads_all_artifacts_and_publishes_manifest_last(self):
         class MissingObject(Exception):
             response = {"Error": {"Code": "404"}}

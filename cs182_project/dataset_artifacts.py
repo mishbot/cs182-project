@@ -1,6 +1,6 @@
 """Pinned WildGuardMix snapshot format and checksummed S3 caching."""
 
-from model_artifacts import download_snapshot, validate_files
+from .model_artifacts import download_snapshot, validate_files
 
 DATASET_ID = "allenai/wildguardmix"
 DATASET_URL = f"https://huggingface.co/datasets/{DATASET_ID}"

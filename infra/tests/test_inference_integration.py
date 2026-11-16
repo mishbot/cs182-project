@@ -1,13 +1,10 @@
 """Exercise real Transformers/PyTorch with a tiny local model when installed."""
 
 import importlib.util
-from pathlib import Path
-import sys
 import tempfile
 import unittest
 
-sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-import infer
+from cs182_project import inference
 
 
 @unittest.skipUnless(
@@ -37,7 +34,7 @@ class RealInferenceTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             tokenizer.save_pretrained(directory)
             model.save_pretrained(directory, safe_serialization=True)
-            result = infer.generate(directory, "hello", 4, "cpu")
+            result = inference.generate(directory, "hello", 4, "cpu")
         self.assertIsInstance(result, str)
 
 
