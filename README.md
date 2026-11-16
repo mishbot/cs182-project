@@ -60,3 +60,6 @@ Python core functionality lives in the installable `cs182_project` package.
 Use `uv sync --locked` for the library, `--extra seed` for archival, or
 `--extra runtime` for inference and activations. Run scripts with `uv run`
 and the corresponding extra. See the infrastructure README for examples.
+
+For on-demand GPU inference and activation collection using the same ECR image
+and S3 snapshots, see [the Modal instructions](infra/modal/README.md).

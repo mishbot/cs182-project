@@ -4,6 +4,8 @@ This implements the interactive portion of the infrastructure plan: S3
 storage, ECR, a persistent data disk, a replaceable GPU dev server, model archival,
 single-prompt inference, and WildGuardMix activation collection to S3. Managed
 batch-job infrastructure is deferred.
+For on-demand GPU tasks using the same ECR image and S3 snapshots, see
+[the Modal instructions](modal/README.md); this does not require an EC2 dev server.
 The model is `Qwen/Qwen1.5-1.8B-Chat`, revision
 `e482ee3f73c375a627a16fdf66fd0c8279743ca6`.
 
