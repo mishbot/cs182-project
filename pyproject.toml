@@ -10,6 +10,13 @@ readme = "README.md"
 requires-python = ">=3.10"
 dependencies = []
 
+[dependency-groups]
+dev = [
+    "boto3-stubs[s3,ecr,sts]==1.38.23",
+    "pyright>=1.1.400",
+    "ruff>=0.12",
+]
+
 [project.optional-dependencies]
 modal = [
     "boto3==1.38.23",
@@ -29,6 +36,16 @@ runtime = [
 
 [tool.setuptools.packages.find]
 include = ["cs182_project*"]
+
+[tool.ruff]
+include = ["cs182_project/**/*.py"]
+extend-exclude = ["infra"]
+force-exclude = true
+target-version = "py310"
+line-length = 100
+
+[tool.ruff.lint]
+extend-select = ["I", "ANN001", "ANN002", "ANN003", "ANN201", "ANN202", "ANN204"]
 
 [tool.uv.sources]
 torch = [

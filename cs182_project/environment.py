@@ -1,14 +1,25 @@
 """Discover the project's published S3 snapshots and newest tagged ECR image."""
 
+from __future__ import annotations
+
 import json
 import os
 import re
+from typing import TYPE_CHECKING
 
+from ._types import JsonObject
 from .dataset_artifacts import validate_dataset_manifest
 from .model_artifacts import MANIFEST, MODEL_ID, MODEL_REVISION, validate_manifest
 
+if TYPE_CHECKING:
+    from datetime import datetime
 
-def _read_manifest(s3, bucket, key):
+    from boto3.session import Session
+    from mypy_boto3_ecr import ECRClient
+    from mypy_boto3_s3 import S3Client
+
+
+def _read_manifest(s3: S3Client, bucket: str, key: str) -> JsonObject:
     response = s3.get_object(Bucket=bucket, Key=key)
     try:
         return json.load(response["Body"])
@@ -16,44 +27,70 @@ def _read_manifest(s3, bucket, key):
         response["Body"].close()
 
 
-def _latest_dataset(s3, bucket):
+def _latest_dataset(s3: S3Client, bucket: str) -> str:
     """Select by completion-marker publication time, never by SHA ordering."""
     pattern = re.compile(rf"datasets/wildguardmix/([0-9a-f]{{40}})/{re.escape(MANIFEST)}")
-    candidates = []
-    for page in s3.get_paginator("list_objects_v2").paginate(Bucket=bucket, Prefix="datasets/wildguardmix/"):
+    candidates: list[tuple[datetime, str]] = []
+    for page in s3.get_paginator("list_objects_v2").paginate(
+        Bucket=bucket, Prefix="datasets/wildguardmix/"
+    ):
         for entry in page.get("Contents", []):
-            if pattern.fullmatch(entry["Key"]):
-                candidates.append(entry)
+            key = entry.get("Key", "")
+            if pattern.fullmatch(key):
+                modified = entry.get("LastModified")
+                if modified is None:
+                    raise ValueError("A dataset completion marker has no publication timestamp.")
+                candidates.append((modified, key))
     if not candidates:
-        raise ValueError(f"No completed WildGuardMix snapshots found in s3://{bucket}/datasets/wildguardmix/.")
-    latest = max(candidates, key=lambda entry: (entry["LastModified"], entry["Key"]))
-    manifest = _read_manifest(s3, bucket, latest["Key"])
+        raise ValueError(
+            f"No completed WildGuardMix snapshots found in s3://{bucket}/datasets/wildguardmix/."
+        )
+    _, latest = max(candidates)
+    manifest = _read_manifest(s3, bucket, latest)
     validate_dataset_manifest(manifest)
-    revision = pattern.fullmatch(latest["Key"])[1]
+    match = pattern.fullmatch(latest)
+    assert match is not None  # Candidates were filtered with this same pattern.
+    revision = match[1]
     if manifest["revision"] != revision:
         raise ValueError("The newest dataset manifest's revision does not match its S3 prefix.")
     return f"s3://{bucket}/datasets/wildguardmix/{revision}"
 
 
-def _latest_image(ecr, repository):
+def _latest_image(ecr: ECRClient, repository: str) -> str:
     """Select the newest tagged image across all result pages."""
-    candidates = []
+    candidates: list[tuple[datetime, str, list[str]]] = []
     for page in ecr.get_paginator("describe_images").paginate(
-        repositoryName=repository, filter={"tagStatus": "TAGGED"},
+        repositoryName=repository,
+        filter={"tagStatus": "TAGGED"},
     ):
-        candidates.extend(image for image in page.get("imageDetails", []) if image.get("imageTags"))
+        for image in page.get("imageDetails", []):
+            tags = image.get("imageTags")
+            if not tags:
+                continue
+            pushed_at, digest = image.get("imagePushedAt"), image.get("imageDigest")
+            if pushed_at is None or digest is None:
+                raise ValueError("A tagged ECR image has no publication timestamp or digest.")
+            candidates.append((pushed_at, digest, tags))
     if not candidates:
         raise ValueError(f"No tagged runtime images found in ECR repository {repository}.")
-    latest = max(candidates, key=lambda image: (image["imagePushedAt"], image["imageDigest"]))
+    _, _, tags = max(candidates, key=lambda image: (image[0], image[1]))
     # Multiple tags for one image are equivalent. Choose deterministically.
-    tag = sorted(latest["imageTags"])[0]
+    tag = min(tags)
     if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}", tag):
         raise ValueError("ECR returned an invalid image tag.")
     result = ecr.describe_repositories(repositoryNames=[repository])
-    return f"{result['repositories'][0]['repositoryUri']}:{tag}"
+    uri = result["repositories"][0].get("repositoryUri")
+    if uri is None:
+        raise ValueError("ECR did not return a repository URI.")
+    return f"{uri}:{tag}"
 
 
-def discover_modal_environment(session, *, project="cs182-cddr", region=None):
+def discover_modal_environment(
+    session: Session,
+    *,
+    project: str = "cs182-cddr",
+    region: str | None = None,
+) -> dict[str, str]:
     """Resolve four shell variables without requiring local OpenTofu state.
 
     Resource names follow infra/persistent. Dataset 'latest' means the newest
@@ -62,7 +99,9 @@ def discover_modal_environment(session, *, project="cs182-cddr", region=None):
     falling back to an older snapshot or a different account.
     """
     if not re.fullmatch(r"[a-z][a-z0-9-]{2,29}", project):
-        raise ValueError("Project must be 3–30 lowercase letters, digits, or hyphens, beginning with a letter.")
+        raise ValueError(
+            "Project must be 3–30 lowercase letters, digits, or hyphens, beginning with a letter."
+        )
     region = region or session.region_name or os.environ.get("AWS_REGION") or "us-east-1"
     if not re.fullmatch(r"[a-z0-9-]+", region):
         raise ValueError("Invalid AWS region.")
@@ -76,7 +115,9 @@ def discover_modal_environment(session, *, project="cs182-cddr", region=None):
     model = _read_manifest(s3, f"{prefix}-models", f"{model_prefix}/{MANIFEST}")
     validate_manifest(model)
     if model.get("model_id") != MODEL_ID or model.get("revision") != MODEL_REVISION:
-        raise ValueError("The model manifest does not match the project's pinned model and revision.")
+        raise ValueError(
+            "The model manifest does not match the project's pinned model and revision."
+        )
     return {
         "CS182_MODAL_IMAGE": _latest_image(ecr, f"{project}-runtime"),
         "MODEL_URI": f"s3://{prefix}-models/{model_prefix}",

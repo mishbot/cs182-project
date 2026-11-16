@@ -1,0 +1,9 @@
+{
+  "include": ["cs182_project"],
+  "exclude": ["infra"],
+  "ignore": ["infra"],
+  "typeCheckingMode": "standard",
+  "pythonVersion": "3.10",
+  "venvPath": ".",
+  "venv": ".venv"
+}
