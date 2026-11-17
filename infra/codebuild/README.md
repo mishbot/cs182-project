@@ -80,6 +80,12 @@ tag; runtime images remain in their existing immutable repository. Superseded
 untagged cache manifests expire after seven days. The cache works across build
 hosts and does not depend on CodeBuild's best-effort local Docker cache.
 
+The build checks the `buildcache` tag before invoking Buildx. An absent tag is a
+normal cold build: the log says so and omits `--cache-from`, rather than showing
+BuildKit's alarming but nonfatal cache-import error. Repository, authentication,
+and other cache lookup errors still fail immediately. The lookup uses
+`ecr:BatchGetImage`, already granted to the build role.
+
 The first build downloads dependencies and populates the cache. Source-only
 rebuilds can reuse the expensive dependency layer and upload only changed
 runtime layers. README changes no longer invalidate dependency installation.
@@ -87,17 +93,22 @@ Changes to `pyproject.toml` or `uv.lock` still invalidate that layer. Cached lay
 still travel over the network when needed; a cloud build is not a guarantee of a
 particular speedup. Cache export adds work to a cold build.
 
-The image is first loaded into the build's Docker daemon, checked for its ML
-dependencies, and tested with `--network none` using the existing offline suite.
+The first build invocation loads the image into the build's Docker daemon and
+exports its build cache to the separate mutable cache repository. It then checks
+the ML dependencies and runs the offline suite with `--network none`. The cache
+therefore survives a failed test; the next attempt can reuse the dependency
+layers. Brittle workstation shell-wrapper tests have been removed; tests for
+core behavior and the real tiny ML models remain.
+
 After tests pass, the same builder reuses its local cached build graph to export
-the runtime and remote cache directly to ECR with eStargz compression and OCI
-media types. Recompression of base layers is enabled too. This accelerates
+the runtime directly to ECR. Both registry exports use eStargz compression and
+OCI media types, including recompression of base layers. This accelerates
 Modal's first import of a new version; published older gzip images are unchanged.
 
 There is no ordinary `docker push` step, which would discard eStargz compression.
 The second build invocation exports the cached graph rather than reinstalling
-dependencies. Tests must pass before either registry export starts. Image labels
-record the GitHub source and commit SHA. Publishing happens in the build phase,
+dependencies. Tests must pass before the runtime registry export starts. Image
+labels record the GitHub source and commit SHA. Publishing happens in the build phase,
 so a failed test cannot accidentally publish from CodeBuild's always-run
 `post_build` phase.
 

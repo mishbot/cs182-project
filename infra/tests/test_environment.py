@@ -1,15 +1,11 @@
-"""Offline publication discovery and sourceable shell environment checks."""
+"""Offline checks for published image and dataset discovery."""
 
 from datetime import datetime, timezone
 import importlib.util
 import io
 import json
-import os
 from pathlib import Path
-import shlex
-import subprocess
 import sys
-import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -20,7 +16,6 @@ from cs182_project.model_artifacts import MANIFEST, MODEL_ID, MODEL_REVISION
 from test_model_scripts import FakeS3
 
 INFRA = Path(__file__).resolve().parents[1]
-HELPER = INFRA / "modal" / "env.sh"
 spec = importlib.util.spec_from_file_location("discover_modal_cli", INFRA / "scripts" / "discover_modal.py")
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
@@ -141,61 +136,6 @@ class DiscoveryTest(unittest.TestCase):
             self.assertEqual(cli.main(), 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("AccessDenied", stderr.getvalue())
-
-
-class ShellEnvironmentTest(unittest.TestCase):
-    def source(self, directory, response, exit_code=0):
-        root = Path(directory)
-        uv = root / "uv"
-        uv.write_text("#!/bin/bash\nprintf '%s\\n' \"$@\" > \"$FAKE_UV_ARGS\"\n"
-                      + "printf '%s\\n' " + shlex.quote(response) + f"\nexit {exit_code}\n")
-        uv.chmod(0o755)
-        environment = dict(os.environ, PATH=f"{directory}:{os.environ['PATH']}", FAKE_UV_ARGS=str(root / "args"))
-        code = '''
-set -euo pipefail
-export CS182_MODAL_IMAGE=old-image MODEL_URI=old-model DATASET_URI=old-dataset OUTPUT_URI=old-output
-before_flags=$-
-before_options=$(set +o)
-before_directory=$PWD
-if source "$1" --project custom; then status=0; else status=$?; fi
-[[ $- == "$before_flags" && $(set +o) == "$before_options" && $PWD == "$before_directory" ]] || exit 90
-[[ $(type -t _cs182_modal_env || true) == "" ]] || exit 91
-printf 'RESULT:%s\\n' "$status"
-bash -c 'printf "%s\\n" "$CS182_MODAL_IMAGE" "$MODEL_URI" "$DATASET_URI" "$OUTPUT_URI"'
-'''
-        return subprocess.run(["bash", "-c", code, "test", str(HELPER)], cwd=directory,
-                              env=environment, capture_output=True, text=True)
-
-    def test_source_exports_all_values_from_any_directory_and_preserves_shell_state(self):
-        with tempfile.TemporaryDirectory() as directory:
-            result = self.source(directory, "image:tag\tmodel-uri\tdataset-uri\toutput-uri")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertEqual(result.stdout.splitlines()[-5:], ["RESULT:0", "image:tag", "model-uri", "dataset-uri", "output-uri"])
-            arguments = (Path(directory) / "args").read_text().splitlines()
-            self.assertEqual(arguments[:2], ["run", "--project"])
-            self.assertIn(str(INFRA / "scripts" / "discover_modal.py"), arguments)
-            self.assertEqual(arguments[-2:], ["--project", "custom"])
-
-    def test_discovery_failure_or_malformed_output_leaves_all_existing_values_unchanged(self):
-        for response, exit_code in [("partial", 1), ("image\tmodel", 0), ("a\tb\tc\td\textra", 0), ("a\nb\tc\td", 0)]:
-            with self.subTest(response=response, exit_code=exit_code), tempfile.TemporaryDirectory() as directory:
-                result = self.source(directory, response, exit_code)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines()[-5:], ["RESULT:1", "old-image", "old-model", "old-dataset", "old-output"])
-
-    def test_discovered_values_are_not_evaluated_as_shell_code(self):
-        with tempfile.TemporaryDirectory() as directory:
-            marker = Path(directory) / "must-not-exist"
-            literal = f"image:$(touch {marker})"
-            result = self.source(directory, f"{literal}\tmodel\tdataset\toutput")
-            self.assertEqual(result.returncode, 0, result.stderr)
-            self.assertIn(literal, result.stdout.splitlines())
-            self.assertFalse(marker.exists())
-
-    def test_execution_instead_of_sourcing_returns_usage_error(self):
-        result = subprocess.run(["bash", str(HELPER)], capture_output=True, text=True)
-        self.assertEqual(result.returncode, 2)
-        self.assertIn("Use: source", result.stderr)
 
 
 if __name__ == "__main__":

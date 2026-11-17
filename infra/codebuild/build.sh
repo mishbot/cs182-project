@@ -21,29 +21,48 @@ aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
 docker buildx create --name runtime-builder --driver docker-container --use
 docker buildx inspect --bootstrap
 image="$RUNTIME_REPOSITORY_URI:$IMAGE_TAG"
+cache_from=()
+# BatchGetImage distinguishes an absent tag (a normal cold build) from API,
+# repository, or permission errors. The service role already has this permission.
+cache_status=$(aws ecr batch-get-image --region "$AWS_DEFAULT_REGION" \
+  --repository-name "${CACHE_REPOSITORY_URI#*/}" --image-ids imageTag=buildcache \
+  --query 'images[0].imageId.imageDigest || failures[0].failureCode' --output text)
+case "$cache_status" in
+  sha256:*)
+    printf 'Using build cache %s:buildcache (%s)\n' "$CACHE_REPOSITORY_URI" "$cache_status"
+    cache_from=(--cache-from "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache")
+    ;;
+  ImageNotFound)
+    printf 'No buildcache tag yet; starting a cold build and saving its cache before tests.\n'
+    ;;
+  *)
+    printf 'Cannot read build cache: %s\n' "$cache_status" >&2
+    exit 1
+    ;;
+esac
 build_args=(
   --platform linux/amd64
-  --cache-from "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache"
+  "${cache_from[@]}"
   --label "org.opencontainers.image.revision=$CODEBUILD_RESOLVED_SOURCE_VERSION"
   --label "org.opencontainers.image.source=$SOURCE_REPOSITORY_URL"
   -f infra/container/Dockerfile -t "$image"
 )
-# Keep the tested build result in this builder's local cache. Do not publish the
-# runtime tag until the offline tests below have passed.
-docker buildx build "${build_args[@]}" --load .
+# Persist the build graph before tests so later attempts can reuse dependency
+# layers even if a test fails. Only the separate cache tag is published here.
+docker buildx build "${build_args[@]}" --load \
+  --cache-to "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,compression=estargz,force-compression=true" .
 
 # Require the real ML dependencies; a missing dependency must not silently skip
 # the tiny local model tests. No model download or AWS calls are needed.
 docker run --rm --network none --entrypoint python "$image" \
   -c 'import torch, transformers, pyarrow, cs182_project'
 docker run --rm --network none --entrypoint python \
-  -v "$PWD/infra:/test-infra:ro" "$image" \
-  -m unittest discover -s /test-infra/tests -v
+  -v "$PWD/infra:/test-source/infra:ro" "$image" \
+  -m unittest discover -s /test-source/infra/tests -v
 
 # Re-export the cached, tested build graph directly to the registry. Loading an
 # image into Docker and using `docker push` would discard eStargz compression.
 # Keep publication in this phase: CodeBuild post_build also runs on failure.
 docker buildx build "${build_args[@]}" \
-  --cache-to "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,compression=estargz,force-compression=true" \
   --output "type=registry,compression=estargz,force-compression=true,oci-mediatypes=true" .
 printf 'Published %s from %s\n' "$image" "$CODEBUILD_RESOLVED_SOURCE_VERSION"
