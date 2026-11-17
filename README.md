@@ -55,6 +55,8 @@ Data splits are written once to `/runs/data` on the `cs182-runs` Volume and reus
 ## CS182_project and infra usage
 
 See [infra/README.md](infra/README.md) for the Qwen GPU development environment.
+Runtime images are built and tested in [AWS CodeBuild](infra/codebuild/README.md)
+from a clean, pushed GitHub commit; local Docker is not required for publishing.
 
 Python core functionality lives in the installable `cs182_project` package.
 Use `uv sync --locked` for the library, `--extra seed` for archival, or

@@ -277,8 +277,14 @@ wheels = [
 ]
 
 [package.optional-dependencies]
+codebuild = [
+    { name = "mypy-boto3-codebuild" },
+]
 ecr = [
     { name = "mypy-boto3-ecr" },
+]
+logs = [
+    { name = "mypy-boto3-logs" },
 ]
 s3 = [
     { name = "mypy-boto3-s3" },
@@ -579,6 +585,9 @@ version = "0.1.0"
 source = { editable = "." }
 
 [package.optional-dependencies]
+build = [
+    { name = "boto3" },
+]
 modal = [
     { name = "boto3" },
     { name = "modal" },
@@ -599,13 +608,14 @@ seed = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "boto3-stubs", extra = ["ecr", "s3", "sts"] },
+    { name = "boto3-stubs", extra = ["codebuild", "ecr", "logs", "s3", "sts"] },
     { name = "pyright" },
     { name = "ruff" },
 ]
 
 [package.metadata]
 requires-dist = [
+    { name = "boto3", marker = "extra == 'build'", specifier = "==1.38.23" },
     { name = "boto3", marker = "extra == 'modal'", specifier = "==1.38.23" },
     { name = "boto3", marker = "extra == 'seed'", specifier = "==1.38.23" },
     { name = "cs182-project", extras = ["seed"], marker = "extra == 'runtime'" },
@@ -617,11 +627,11 @@ requires-dist = [
     { name = "torch", marker = "(platform_machine != 'x86_64' and extra == 'runtime') or (sys_platform != 'linux' and extra == 'runtime')", specifier = "==2.6.0" },
     { name = "transformers", marker = "extra == 'runtime'", specifier = "==4.51.3" },
 ]
-provides-extras = ["modal", "seed", "runtime"]
+provides-extras = ["build", "modal", "seed", "runtime"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "boto3-stubs", extras = ["s3", "ecr", "sts"], specifier = "==1.38.23" },
+    { name = "boto3-stubs", extras = ["codebuild", "ecr", "logs", "s3", "sts"], specifier = "==1.38.23" },
     { name = "pyright", specifier = ">=1.1.400" },
     { name = "ruff", specifier = ">=0.12" },
 ]
@@ -1445,6 +1455,18 @@ wheels = [
 ]
 
 [[package]]
+name = "mypy-boto3-codebuild"
+version = "1.38.17"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/0b/22/66a131b7f4778197ce4f74f8a879935ffab7e0b5ad67406209573587a8c4/mypy_boto3_codebuild-1.38.17.tar.gz", hash = "sha256:42721a1b2f11f0702debd74af7e8897cec3241322fd0397d848d7619796c1658", size = 41536, upload-time = "2025-05-15T19:42:16.799Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/30/3d/90644af805b319dd8f389a771563b567c637fbe0b2ec279e5a8b099080d0/mypy_boto3_codebuild-1.38.17-py3-none-any.whl", hash = "sha256:73fdd4d1b713b900b389fb9be0204a2b6c4cb208c3239e4ed9b6bb173bee304c", size = 47542, upload-time = "2025-05-15T19:42:11.851Z" },
+]
+
+[[package]]
 name = "mypy-boto3-ecr"
 version = "1.38.37"
 source = { registry = "https://pypi.org/simple" }
@@ -1454,6 +1476,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/29/d5/0e46fd78c4d75018ee0720582227603746d0329daa130907c518990494f1/mypy_boto3_ecr-1.38.37.tar.gz", hash = "sha256:fed095a297b35c954eb80df0d4ee631c8241f5b0dafd8d5ef799cf4e8487814a", size = 34147, upload-time = "2025-06-16T19:42:39.547Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/cd/05/aa02b66b35123bb1dab63faf66bfc146510b637b2d9e60445990955146ef/mypy_boto3_ecr-1.38.37-py3-none-any.whl", hash = "sha256:c5c6d9dc84059afe431c4a2b758b265d420856ce1e7ad563870a006b96b1a0c2", size = 40001, upload-time = "2025-06-16T19:42:36.702Z" },
+]
+
+[[package]]
+name = "mypy-boto3-logs"
+version = "1.38.39"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "typing-extensions", marker = "python_full_version < '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/bf/40/66537e20b8ec35d32174615bc870b11b0244b1f01285640e7e7d84b415f2/mypy_boto3_logs-1.38.39.tar.gz", hash = "sha256:4031dd4fc59321cc50d99909f51f8698389f8ec261116d397ce60bda659df6c7", size = 45750, upload-time = "2025-06-18T22:35:09.903Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/93/3c/97e43511547229262d9ca61ae3365786142886a3055e1337f78d25db908f/mypy_boto3_logs-1.38.39-py3-none-any.whl", hash = "sha256:07eb8c3df2a0e94bec1a0453ecab97e636e1281b3158911913cde06389bc23a3", size = 51640, upload-time = "2025-06-18T22:35:00.728Z" },
 ]
 
 [[package]]

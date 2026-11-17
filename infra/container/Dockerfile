@@ -8,9 +8,10 @@ ENV PYTHONUNBUFFERED=1 \
     HF_HUB_DISABLE_TELEMETRY=1 \
     TOKENIZERS_PARALLELISM=false
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md /app/
+COPY pyproject.toml uv.lock /app/
 # Cache dependencies separately from project code. CUDA wheels also run on CPU.
 RUN uv sync --locked --extra runtime --no-dev --no-install-project
+COPY README.md /app/
 COPY cs182_project /app/cs182_project
 RUN uv sync --locked --extra runtime --no-dev --no-editable
 COPY infra/scripts/*.py /app/
