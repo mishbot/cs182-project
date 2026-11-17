@@ -174,7 +174,7 @@ class ModalAdapterTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "No AWS credentials"):
             runner.aws_environment(session)
 
-    def test_registry_uses_its_own_region_and_only_modal_wrapper_source(self):
+    def test_preparation_uses_registry_region_without_baking_local_source(self):
         values = runner.aws_environment(self.session())
         image = MagicMock()
         image.entrypoint.return_value = image
@@ -183,16 +183,53 @@ class ModalAdapterTest(unittest.TestCase):
         image.add_local_python_source.return_value = image
         with patch.object(runner.modal.Image, "from_registry", return_value=image) as registry, \
                 patch.object(runner.modal.Secret, "from_dict", return_value="secret") as secret:
-            self.assertIs(runner.runtime_image(self.image, values), image)
+            self.assertIs(runner.import_runtime_image(self.image, values), image)
         self.assertEqual(secret.call_args.args[0]["AWS_REGION"], "us-east-1")
         self.assertEqual(secret.call_args.args[0]["AWS_SESSION_TOKEN"], "temporary-token")
         registry.assert_called_once_with(self.image, secret="secret")
         image.entrypoint.assert_called_once_with([])
         image.run_commands.assert_called_once_with("/app/.venv/bin/python -m ensurepip --upgrade")
-        image.add_local_python_source.assert_called_once_with("infra.modal")
+        image.add_local_python_source.assert_not_called()
         for reference in ["", "runtime:latest", self.image.split(":")[0], "https://example.com/image"]:
             with self.subTest(reference=reference), self.assertRaisesRegex(ValueError, "CS182_MODAL_IMAGE"):
-                runner.runtime_image(reference, values)
+                runner.import_runtime_image(reference, values)
+
+    def test_execution_only_references_named_image_without_registry_or_build_steps(self):
+        image = MagicMock()
+        image.add_local_python_source.return_value = image
+        with patch.object(runner.modal.Image, "from_name", return_value=image) as lookup, \
+                patch.object(runner.modal.Image, "from_registry") as registry, \
+                patch.object(runner.modal.Secret, "from_dict") as secret:
+            self.assertIs(runner.runtime_image(self.image), image)
+        lookup.assert_called_once_with(runner.modal_image_name(self.image))
+        image.add_local_python_source.assert_called_once_with("infra.modal")
+        registry.assert_not_called()
+        secret.assert_not_called()
+        image.build.assert_not_called()
+        image.run_commands.assert_not_called()
+
+    def test_prepared_names_are_stable_and_distinguish_ecr_references(self):
+        name = runner.modal_image_name(self.image)
+        self.assertEqual(name, runner.modal_image_name(self.image))
+        self.assertNotEqual(name, runner.modal_image_name(self.image.replace("dev-test", "dev-other")))
+        self.assertNotEqual(name, runner.modal_image_name(self.image.replace("123456789012", "999999999999")))
+        self.assertNotEqual(name, runner.modal_image_name(self.image.replace("us-east-1", "us-west-2")))
+
+    def test_preparation_publishes_after_success_and_never_after_build_failure(self):
+        image = MagicMock()
+        image.build.return_value = image
+        with patch.object(runner, "import_runtime_image", return_value=image), \
+                patch.object(runner.modal, "enable_output", return_value=nullcontext()):
+            self.assertEqual(runner.prepare_runtime_image(self.image, {}), runner.modal_image_name(self.image))
+        self.assertEqual([call[0] for call in image.mock_calls], ["build", "publish"])
+        image.publish.assert_called_once_with(runner.modal_image_name(self.image))
+        image.reset_mock()
+        image.build.side_effect = RuntimeError("image import failed")
+        with patch.object(runner, "import_runtime_image", return_value=image), \
+                patch.object(runner.modal, "enable_output", return_value=nullcontext()):
+            with self.assertRaisesRegex(RuntimeError, "image import failed"):
+                runner.prepare_runtime_image(self.image, {})
+        image.publish.assert_not_called()
 
     def test_sdk_constructs_image_and_function_without_resolving_cloud_objects(self):
         class StopBeforeCloud(Exception):

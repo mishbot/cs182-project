@@ -1,5 +1,6 @@
 """Shared Modal image, credentials, execution, and cache configuration."""
 
+import hashlib
 import logging
 import os
 import re
@@ -10,6 +11,9 @@ import modal
 CACHE_VOLUME = "cs182-project-cache"
 CACHE_MOUNT = "/snapshot-cache"
 logger = logging.getLogger(__name__)
+# Bump when the import/adaptation recipe changes, so old prepared images cannot
+# silently stand in for the new recipe. ECR references must be immutable.
+IMAGE_ADAPTER_VERSION = "v1"
 
 
 def aws_environment(session):
@@ -30,8 +34,7 @@ def aws_environment(session):
     return values
 
 
-def runtime_image(reference, credentials):
-    """Adapt the existing ECR runtime; never replace its installed project code."""
+def _registry_match(reference):
     match = re.fullmatch(
         r"\d{12}\.dkr\.ecr\.([a-z0-9-]+)\.amazonaws\.com(?:\.cn)?/"
         r"[a-z0-9][a-z0-9._/-]*(?::[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}|@sha256:[0-9a-f]{64})",
@@ -39,6 +42,19 @@ def runtime_image(reference, credentials):
     )
     if match is None:
         raise ValueError("Set CS182_MODAL_IMAGE to the full private ECR image URI with an immutable tag or digest.")
+    return match
+
+
+def modal_image_name(reference: str) -> str:
+    """Map one immutable ECR reference to a stable, account-specific Modal name."""
+    _registry_match(reference)
+    digest = hashlib.sha256(reference.encode()).hexdigest()[:32]
+    return f"cs182-runtime-{IMAGE_ADAPTER_VERSION}:{digest}"
+
+
+def import_runtime_image(reference, credentials):
+    """Import/adapt ECR only during explicit preparation, without local sources."""
+    match = _registry_match(reference)
     # The registry can be in a different region from the S3 runtime configuration.
     registry_keys = {key: value for key, value in credentials.items() if key in {
         "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
@@ -49,8 +65,22 @@ def runtime_image(reference, credentials):
         .entrypoint([])
         .run_commands("/app/.venv/bin/python -m ensurepip --upgrade")
         .env({"VIRTUAL_ENV": "/app/.venv"})
-        .add_local_python_source("infra.modal")
     )
+
+
+def prepare_runtime_image(reference, credentials):
+    """Publish only after the ECR import and all adaptation layers succeed."""
+    name = modal_image_name(reference)
+    logger.info("Preparing %s from %s", name, reference)
+    with modal.enable_output():
+        image = import_runtime_image(reference, credentials).build()
+        image.publish(name)
+    return name
+
+
+def runtime_image(reference):
+    """Use an already prepared image; execution never imports from a registry."""
+    return modal.Image.from_name(modal_image_name(reference)).add_local_python_source("infra.modal")
 
 
 def execute_task(task, options):
@@ -102,7 +132,7 @@ def run_task(task, options, *, gpu="T4", timeout=3600):
     if not reference:
         raise ValueError("Set CS182_MODAL_IMAGE to the ECR runtime image URI.")
     credentials = aws_environment(boto3.Session())
-    image = runtime_image(reference, credentials)
+    image = runtime_image(reference)
     volume = modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True, version=2)
     worker_app = modal.App(f"cs182-project-{task.replace('_', '-')}")
     worker = worker_app.function(
@@ -118,5 +148,12 @@ def run_task(task, options, *, gpu="T4", timeout=3600):
         include_source=False,
     )(execute_task)
     # The outer `modal run` entrypoint supplies output for this nested worker App.
-    with modal.enable_output(), worker_app.run():
-        return worker.remote(task, options)
+    try:
+        with modal.enable_output(), worker_app.run():
+            return worker.remote(task, options)
+    except modal.exception.NotFoundError as error:
+        raise RuntimeError(
+            f"Could not start with prepared image {modal_image_name(reference)}: {error}. "
+            "Check the Modal environment and run "
+            "`uv run --extra modal python -m infra.modal.prepare_image` before running GPU tasks."
+        ) from error

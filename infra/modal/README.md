@@ -14,7 +14,23 @@ uv sync --locked --extra modal
 uv run --locked --extra modal modal setup
 source infra/scripts/aws-login.sh
 source infra/modal/env.sh
+uv run --locked --extra modal python -m infra.modal.prepare_image
 ```
+
+Run the final preparation command once per selected ECR reference, before
+inference or activation collection. It imports the image, clears its Docker
+entrypoint, enables pip in its existing virtual environment, and publishes the
+finished result as a named Modal image. A failed preparation never publishes the
+name. Use the same Modal workspace and `MODAL_ENVIRONMENT` for preparation and
+execution.
+
+GPU tasks only look up this prepared image; they never pull from ECR or build
+adaptation layers. If it is missing, the task fails with preparation instructions
+instead of doing a slow import during inference. The printed Modal name is
+derived deterministically from the complete ECR reference and adaptation recipe
+version, so no additional environment variable or manual name selection is
+needed. Different accounts, regions, repositories, tags, and digests map to
+different names. `CS182_MODAL_IMAGE` continues to contain the **ECR reference**.
 
 `env.sh` uses the logged-in AWS account and region to discover and export
 `CS182_MODAL_IMAGE`, `MODEL_URI`, `DATASET_URI`, and `OUTPUT_URI`. It prints the
@@ -34,7 +50,9 @@ chosen. The model stays at the project's pinned revision and its completion
 manifest is checked. Missing snapshots/images, malformed selected manifests,
 and AWS errors leave all four existing environment variables unchanged.
 
-Sourcing again refreshes these selections. Keep the printed URIs and image tag
+Sourcing again refreshes these selections. If it selects a new ECR reference,
+prepare that image before running GPU tasks. Already prepared versions remain
+available when selected again. Keep the printed URIs and image tag
 with experiment results when reproducing a run. You can also set the variables
 explicitly; an image digest (`REPOSITORY@sha256:...`) works. The image must use the current runtime
 layout: Python 3.11 and project dependencies installed in `/app/.venv`, with the
@@ -50,18 +68,20 @@ source .venv/bin/activate
 modal run infra/modal/infer.py --help
 ```
 
-Each run resolves your current AWS credentials through boto3's normal credential
-chain, including the `cs182-tools` profile from the login helper. Frozen access
-keys and any session token are passed through ephemeral Modal Secrets for the
-ECR pull and remote S3 operations. Local profiles and credential files are not
-uploaded. No named AWS Secret in Modal is required.
+Preparation and each task resolve current AWS credentials through boto3's normal
+credential chain, including the `cs182-tools` profile from the login helper.
+Preparation passes frozen keys and any session token through an ephemeral Modal
+Secret for the ECR pull. GPU tasks receive a separate runtime Secret for S3,
+without adding credentials to the image recipe. Local profiles and credential
+files are not uploaded. No named AWS Secret in Modal is required, and expired
+ECR pull credentials do not prevent reusing a prepared image.
 
 Temporary credentials retain their original expiry and cannot refresh from your
 workstation during a remote run. Log in again before starting a job if needed.
 Runtime region comes from the AWS session, then `AWS_REGION`, then `us-east-1`;
 ECR authentication uses the region in the image URI independently.
 
-The AWS identity needs `ecr:GetAuthorizationToken` and repository access for
+Image preparation needs `ecr:GetAuthorizationToken` and repository access for
 `ecr:BatchGetImage`, `ecr:GetDownloadUrlForLayer`, and
 `ecr:BatchCheckLayerAvailability`. Runtime access needs `s3:GetObject` on the model
 and dataset prefixes. Activation collection additionally needs `s3:PutObject`
@@ -140,7 +160,16 @@ The only local source uploaded with the worker is `infra.modal`. Core project
 code and ML dependencies come from the selected ECR image. Publish a new image
 to use changes to `cs182_project`; editing the checkout alone does not update
 remote model behavior. The Modal image adaptation clears the inference Docker
-entrypoint and enables pip in the image's existing virtual environment.
+entrypoint and enables pip in the image's existing virtual environment only
+during explicit preparation.
+
+New CodeBuild releases use eStargz compression for faster first-time imports
+into Modal. Existing gzip images keep their old format; rebuild and publish a
+new immutable ECR tag to get fast pulls. Preparation logs for the new images
+should include `Using estargz to speed up image pull`. Ordinary task logs should
+have no registry-import or `ensurepip` steps. Named-image reuse removes image
+preparation from the task path; container startup, S3 checks, and model loading
+still take time.
 
 ## Validation
 
@@ -150,17 +179,21 @@ Offline checks create no AWS or Modal resources:
 uv run --locked --extra modal python -m unittest discover -s infra/tests -v
 uv run --locked --extra modal modal run infra/modal/infer.py --help
 uv run --locked --extra modal modal run infra/modal/collect_activations.py --help
+uv run --locked --extra modal python -m infra.modal.prepare_image --help
 bash -n infra/modal/env.sh
 ```
 
-For a billable smoke check, run inference with `--max-new-tokens 8`, then run it
-again. The second run should log restored verified cache files. For activations,
+For a billable smoke check, prepare the selected image, then run inference with
+`--max-new-tokens 8` twice. Neither task should import or rebuild the image. The
+second run should also log restored verified snapshot-cache files. For activations,
 use `--sample-size 4 --batch-size 2`, inspect the returned S3 completion manifest,
 and verify four Parquet rows with the expected layer and hidden dimensions using
 the reader example in [the infrastructure guide](../README.md). A missing input
 prefix should exit unsuccessfully and publish no activation completion marker.
 
 References: [existing images](https://modal.com/docs/guide/existing-images),
+[named images](https://modal.com/docs/guide/named-images),
+[fast registry pulls](https://modal.com/docs/guide/fast-pull-from-registry),
 [Modal Secrets](https://modal.com/docs/guide/secrets),
 [Volumes](https://modal.com/docs/guide/volumes), and
 [terminal logs](https://modal.com/docs/guide/developing-debugging).
