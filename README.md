@@ -12,6 +12,9 @@ and the corresponding extra. See the infrastructure README for examples.
 
 For on-demand GPU inference and activation collection using the same ECR image
 and S3 snapshots, see [the Modal instructions](infra/modal/README.md).
+Prepare each selected image once in Modal; GPU tasks then reuse its published
+Modal name without pulling from ECR during execution. CodeBuild publishes new
+runtime images in eStargz format to accelerate that initial import.
 
 ## Development checks
 

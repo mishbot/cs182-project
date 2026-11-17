@@ -51,7 +51,15 @@ stop the build. Other failures exit with status 1. Re-running a build requires a
 new tag because runtime tags remain immutable.
 
 After a successful build, `source infra/modal/env.sh` discovers the newest image
-as before. EC2 users can pull the printed image URI directly.
+as before. Prepare it once in Modal before running GPU tasks:
+
+```bash
+source infra/modal/env.sh
+uv run --locked --extra modal python -m infra.modal.prepare_image
+```
+
+Subsequent Modal tasks reference the prepared named image without importing it
+again. EC2 users can pull the printed ECR image URI directly.
 
 ## Build and cache behavior
 
@@ -79,12 +87,19 @@ Changes to `pyproject.toml` or `uv.lock` still invalidate that layer. Cached lay
 still travel over the network when needed; a cloud build is not a guarantee of a
 particular speedup. Cache export adds work to a cold build.
 
-The image is loaded into the build's Docker daemon, checked for its ML
+The image is first loaded into the build's Docker daemon, checked for its ML
 dependencies, and tested with `--network none` using the existing offline suite.
-The cache can be updated even when tests fail, but the runtime image is pushed
-only after tests pass. Image labels record the GitHub source and commit SHA.
-Pushing happens in the build phase, so a failed build cannot accidentally push
-from CodeBuild's always-run `post_build` phase.
+After tests pass, the same builder reuses its local cached build graph to export
+the runtime and remote cache directly to ECR with eStargz compression and OCI
+media types. Recompression of base layers is enabled too. This accelerates
+Modal's first import of a new version; published older gzip images are unchanged.
+
+There is no ordinary `docker push` step, which would discard eStargz compression.
+The second build invocation exports the cached graph rather than reinstalling
+dependencies. Tests must pass before either registry export starts. Image labels
+record the GitHub source and commit SHA. Publishing happens in the build phase,
+so a failed test cannot accidentally publish from CodeBuild's always-run
+`post_build` phase.
 
 ## Permissions and storage
 
@@ -146,4 +161,5 @@ dependency-download activity, and build/push durations between cold and warm
 builds. Confirm an existing tag is rejected and a failed image test prevents a
 runtime push.
 
-Reference: [AWS's ECR remote-cache CodeBuild example](https://aws.amazon.com/blogs/devops/reduce-docker-image-build-time-on-aws-codebuild-using-amazon-ecr-as-a-remote-cache/).
+References: [AWS's ECR remote-cache CodeBuild example](https://aws.amazon.com/blogs/devops/reduce-docker-image-build-time-on-aws-codebuild-using-amazon-ecr-as-a-remote-cache/),
+[Modal fast registry pulls](https://modal.com/docs/guide/fast-pull-from-registry).

@@ -21,12 +21,16 @@ aws ecr get-login-password --region "$AWS_DEFAULT_REGION" |
 docker buildx create --name runtime-builder --driver docker-container --use
 docker buildx inspect --bootstrap
 image="$RUNTIME_REPOSITORY_URI:$IMAGE_TAG"
-docker buildx build --platform linux/amd64 --load \
-  --cache-from "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache" \
-  --cache-to "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache,mode=max,image-manifest=true,oci-mediatypes=true" \
-  --label "org.opencontainers.image.revision=$CODEBUILD_RESOLVED_SOURCE_VERSION" \
-  --label "org.opencontainers.image.source=$SOURCE_REPOSITORY_URL" \
-  -f infra/container/Dockerfile -t "$image" .
+build_args=(
+  --platform linux/amd64
+  --cache-from "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache"
+  --label "org.opencontainers.image.revision=$CODEBUILD_RESOLVED_SOURCE_VERSION"
+  --label "org.opencontainers.image.source=$SOURCE_REPOSITORY_URL"
+  -f infra/container/Dockerfile -t "$image"
+)
+# Keep the tested build result in this builder's local cache. Do not publish the
+# runtime tag until the offline tests below have passed.
+docker buildx build "${build_args[@]}" --load .
 
 # Require the real ML dependencies; a missing dependency must not silently skip
 # the tiny local model tests. No model download or AWS calls are needed.
@@ -36,6 +40,10 @@ docker run --rm --network none --entrypoint python \
   -v "$PWD/infra:/test-infra:ro" "$image" \
   -m unittest discover -s /test-infra/tests -v
 
+# Re-export the cached, tested build graph directly to the registry. Loading an
+# image into Docker and using `docker push` would discard eStargz compression.
 # Keep publication in this phase: CodeBuild post_build also runs on failure.
-docker push "$image"
+docker buildx build "${build_args[@]}" \
+  --cache-to "type=registry,ref=$CACHE_REPOSITORY_URI:buildcache,mode=max,image-manifest=true,oci-mediatypes=true,compression=estargz,force-compression=true" \
+  --output "type=registry,compression=estargz,force-compression=true,oci-mediatypes=true" .
 printf 'Published %s from %s\n' "$image" "$CODEBUILD_RESOLVED_SOURCE_VERSION"
