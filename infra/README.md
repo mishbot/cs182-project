@@ -2,7 +2,7 @@
 
 This implements the interactive portion of the infrastructure plan: S3
 storage, ECR, a persistent data disk, a replaceable GPU dev server, model archival,
-single-prompt inference, and WildGuardMix activation collection to S3. Managed
+single-prompt inference, CodeBuild image publishing, and WildGuardMix activation collection to S3. Managed
 batch-job infrastructure is deferred.
 For on-demand GPU tasks using the same ECR image and S3 snapshots, see
 [the Modal instructions](modal/README.md); this does not require an EC2 dev server.
@@ -11,20 +11,24 @@ The model is `Qwen/Qwen1.5-1.8B-Chat`, revision
 
 ## Prerequisites and permissions
 
-Use OpenTofu >= 1.8, AWS CLI >= 2.32.0, Docker with an x86_64 Linux build target,
+Use OpenTofu >= 1.8, AWS CLI >= 2.32.0,
 uv >= 0.10.4, Python >= 3.10, and AWS credentials in the normal CLI/SDK credential
 chain. The image pins Python
 3.11.12, PyTorch 2.6.0 with CUDA 12.4, Transformers 4.51.3, and PyArrow 19.0.1. Its CUDA wheels also
 support CPU inference; allow at least 16 GiB host RAM and several GB for downloads.
-Running a build from an ARM host requires Docker's amd64 emulation support.
+CodeBuild builds linux/amd64 images natively; publishing needs no local Docker
+or amd64 emulation on an ARM workstation.
 
 The deploying identity needs create/read/update/delete permissions for the resources
 in each stack: S3 buckets and their policies/configuration, ECR repositories, EC2
 VPC/subnet/routes/internet gateway/security groups/key pairs/instances/volumes and
 attachments, and IAM roles, inline policies, and instance profiles. It also needs
 `iam:PassRole`, resource tagging, EC2 describe calls, and `ssm:GetParameter` for the
-public DLAMI parameter. The image publisher needs `ecr:GetAuthorizationToken` and
-repository upload/image permissions. Model and dataset seeding need `s3:ListBucket`,
+public DLAMI parameter. Provisioning also requires CodeBuild, CloudWatch Logs,
+KMS keys/aliases, and the build service role. The build role authenticates and
+uploads to ECR; the workstation needs permissions to trigger and monitor builds.
+See [the CodeBuild guide](codebuild/README.md) for scoped permissions.
+Model and dataset seeding need `s3:ListBucket`,
 `s3:GetObject`, `s3:PutObject`, and multipart upload permissions on their respective
 model and datasets buckets.
 These operator permissions are separate from the server's narrowly scoped role.
@@ -133,7 +137,8 @@ on this budget. New tag keys can take up to 24 hours to appear and up to another
 [AWS's tag activation instructions](https://docs.aws.amazon.com/awsaccountbilling/latest/aboutv2/activating-tags.html).
 The AZ must remain fixed for this disk. Bucket names include the project, AWS
 account ID, and region. Outputs include all three bucket names, the ECR URL, disk ID,
-and the ready-to-export dev-server inputs.
+the ready-to-export dev-server inputs, and the runtime build project and cache
+repository URL.
 
 Buckets block public access, enforce TLS, use SSE-S3 encryption and bucket-owner
 ownership; the model and datasets buckets also retain previous object versions. The ECR
@@ -142,12 +147,19 @@ guards and cannot be deleted by an ordinary persistent-stack destroy.
 
 ## Build the image and archive the model
 
+Apply the updated persistent stack, then commit and push your changes to GitHub.
+The build trigger rejects dirty checkouts and builds the exact local `HEAD` SHA.
+It uses CodeBuild and a persistent ECR layer cache, runs offline image tests, and
+publishes only after those tests pass. See [the CodeBuild guide](codebuild/README.md)
+for setup, logs, cancellation, and cold/warm build checks.
+
 ```bash
 REGION=us-east-1
 REPOSITORY=$(tofu -chdir=infra/persistent output -raw repository_url)
 MODEL_BUCKET=$(tofu -chdir=infra/persistent output -raw model_bucket)
-IMAGE_TAG="dev-$(git rev-parse HEAD | cut -c1-7)"
-bash infra/scripts/build-and-push.sh "$REGION" "$REPOSITORY" "$IMAGE_TAG"
+IMAGE_TAG="dev-$(git rev-parse --short HEAD)-$(date -u +%Y%m%d%H%M%S)"
+uv run --locked --extra build python infra/scripts/build_image.py \
+  "$REGION" "$REPOSITORY" "$IMAGE_TAG"
 
 uv sync --locked --extra seed
 AWS_DEFAULT_REGION="$REGION" uv run --locked --extra seed python infra/scripts/seed_model.py \
@@ -468,25 +480,25 @@ tofu -chdir=infra/persistent validate
 tofu -chdir=infra/dev-server validate
 tofu -chdir=infra/persistent test
 tofu -chdir=infra/dev-server test
-bash -n infra/scripts/build-and-push.sh
+bash -n infra/codebuild/build.sh
 bash -n infra/scripts/aws-login.sh
 uv run --locked python -m unittest discover -s infra/tests -v
 uv run --locked python infra/scripts/infer.py --help
 uv run --locked python infra/scripts/seed_model.py --help
 uv run --locked python infra/scripts/seed_dataset.py --help
 uv run --locked python infra/scripts/collect_activations.py --help
+uv run --locked --extra build python infra/scripts/build_image.py --help
 ```
 
 OpenTofu tests use a mocked provider and never create AWS resources. Python tests
-use fixtures/mocks and make no AWS calls or model downloads. To also exercise the
-real ML dependencies, build the image locally and run the tests inside it (this
-includes a tiny randomly initialized Qwen model):
+use fixtures/mocks and make no AWS calls or model downloads. CodeBuild also runs
+the offline suite inside the runtime image before pushing it, including a tiny
+randomly initialized Qwen model. To exercise real ML dependencies locally without
+Docker:
 
 ```bash
-docker build --platform linux/amd64 -f infra/container/Dockerfile -t cs182-cddr:local-check .
-docker run --rm --network none --entrypoint python \
-  -v "$PWD/infra:/test-infra:ro" cs182-cddr:local-check \
-  -m unittest discover -s /test-infra/tests -v
+uv sync --locked --all-extras
+uv run --locked --all-extras python -m unittest discover -s infra/tests -v
 ```
 
 The deployment checks require a real AWS account and incur charges:

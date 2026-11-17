@@ -12,12 +12,15 @@ dependencies = []
 
 [dependency-groups]
 dev = [
-    "boto3-stubs[s3,ecr,sts]==1.38.23",
+    "boto3-stubs[codebuild,ecr,logs,s3,sts]==1.38.23",
     "pyright>=1.1.400",
     "ruff>=0.12",
 ]
 
 [project.optional-dependencies]
+build = [
+    "boto3==1.38.23",
+]
 modal = [
     "boto3==1.38.23",
     "modal==1.6.4",
