@@ -33,7 +33,7 @@ needed. Different accounts, regions, repositories, tags, and digests map to
 different names. `CS182_MODAL_IMAGE` continues to contain the **ECR reference**.
 
 `env.sh` uses the logged-in AWS account and region to discover and export
-`CS182_MODAL_IMAGE`, `MODEL_URI`, `DATASET_URI`, and `OUTPUT_URI`. It prints the
+`CS182_MODAL_IMAGE`, `MODEL_URI`, `DATASET_URI`, `OUTPUT_URI`, and `ANALYSIS_URI`. It prints the
 selected values. Resource names follow the persistent stack's naming convention;
 no local OpenTofu state is needed. The project defaults to `cs182-cddr`, or
 `CS182_PROJECT` if set. For another deployment:
@@ -48,7 +48,7 @@ match. The runtime is the newest tagged image by ECR `imagePushedAt`, across all
 result pages. If one image has multiple tags, the alphabetically first tag is
 chosen. The model stays at the project's pinned revision and its completion
 manifest is checked. Missing snapshots/images, malformed selected manifests,
-and AWS errors leave all four existing environment variables unchanged.
+and AWS errors leave all five existing environment variables unchanged.
 
 Sourcing again refreshes these selections. If it selects a new ECR reference,
 prepare that image before running GPU tasks. Already prepared versions remain
@@ -215,3 +215,34 @@ References: [existing images](https://modal.com/docs/guide/existing-images),
 [Modal Secrets](https://modal.com/docs/guide/secrets),
 [Volumes](https://modal.com/docs/guide/volumes), and
 [terminal logs](https://modal.com/docs/guide/developing-debugging).
+
+## GPU activation analysis
+
+After applying the analyses-bucket infrastructure, rebuilding the ECR image, and
+preparing it as above:
+
+```bash
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py
+# Enable the separate adversarial analysis when needed:
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py --include-adversarial
+```
+
+The worker uses one A100-40GB, four CPU cores, and 32 GiB RAM by default. Override
+`--gpu`, `--memory` (MiB), or `--timeout`. It uses the same prepared ECR image but
+launches `/app/.analysis-venv/bin/python` to keep cuML/CUDA dependencies isolated
+from inference. No activation inputs are downloaded to your workstation. GPU
+startup fails explicitly without a working accelerator; dispatch/fallback logs
+stream to your terminal.
+
+`--run-s3-uri` chooses an exact run; otherwise the latest completed activation
+run is selected. `--activation-root-s3-uri` and `--output-s3-uri` override the
+input/output roots. Environment defaults are `OUTPUT_URI` and `ANALYSIS_URI`.
+Only non-adversarial rows are analyzed by default, with three selected directions.
+Adding `--include-adversarial` produces six directions and separate histograms
+for the two groups. The strict refusal threshold is `> 0`.
+
+Artifacts and a final completion manifest go into the private analyses bucket;
+the command prints the report's S3 URI. Forwarded AWS credentials need activation
+read/list and analyses write/multipart-abort permissions. See [analysis details](../analysis.md)
+for provisioning, retrieval, evaluation, and numerical exports. A100 runtime,
+S3 requests/storage, and applicable data transfer incur charges.

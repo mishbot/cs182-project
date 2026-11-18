@@ -50,7 +50,7 @@ data "aws_availability_zone" "selected" {
 
 locals {
   prefix          = "${var.project}-${data.aws_caller_identity.current.account_id}-${var.region}"
-  storage_buckets = toset(["models", "datasets", "activations"])
+  storage_buckets = toset(["models", "datasets", "activations", "analyses"])
 }
 
 resource "aws_s3_bucket" "storage" {
@@ -176,6 +176,7 @@ output "dev_server_inputs" {
     model_bucket      = aws_s3_bucket.storage["models"].id
     dataset_bucket    = aws_s3_bucket.storage["datasets"].id
     activation_bucket = aws_s3_bucket.storage["activations"].id
+    analysis_bucket   = aws_s3_bucket.storage["analyses"].id
     ecr_repository    = aws_ecr_repository.runtime.name
     data_volume_id    = aws_ebs_volume.data.id
   }
@@ -184,5 +185,6 @@ output "dev_server_inputs" {
 output "model_bucket" { value = aws_s3_bucket.storage["models"].id }
 output "dataset_bucket" { value = aws_s3_bucket.storage["datasets"].id }
 output "activation_bucket" { value = aws_s3_bucket.storage["activations"].id }
+output "analysis_bucket" { value = aws_s3_bucket.storage["analyses"].id }
 output "repository_url" { value = aws_ecr_repository.runtime.repository_url }
 output "data_volume_id" { value = aws_ebs_volume.data.id }

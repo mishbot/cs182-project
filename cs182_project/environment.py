@@ -91,7 +91,7 @@ def discover_modal_environment(
     project: str = "cs182-cddr",
     region: str | None = None,
 ) -> dict[str, str]:
-    """Resolve four shell variables without requiring local OpenTofu state.
+    """Resolve five shell variables without requiring local OpenTofu state.
 
     Resource names follow infra/persistent. Dataset 'latest' means the newest
     completion marker in S3; image 'latest' means the newest ECR push with a tag.
@@ -123,4 +123,5 @@ def discover_modal_environment(
         "MODEL_URI": f"s3://{prefix}-models/{model_prefix}",
         "DATASET_URI": _latest_dataset(s3, f"{prefix}-datasets"),
         "OUTPUT_URI": f"s3://{prefix}-activations/runs",
+        "ANALYSIS_URI": f"s3://{prefix}-analyses/runs",
     }

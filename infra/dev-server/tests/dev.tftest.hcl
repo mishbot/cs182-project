@@ -13,6 +13,10 @@ mock_provider "aws" {
     target = data.aws_s3_bucket.activations
     values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-activations" }
   }
+  override_data {
+    target = data.aws_s3_bucket.analyses
+    values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-analyses" }
+  }
   mock_data "aws_ecr_repository" {
     defaults = { arn = "arn:aws:ecr:us-east-1:123456789012:repository/fixture-runtime" }
   }
@@ -24,6 +28,7 @@ variables {
   model_bucket      = "fixture-models"
   dataset_bucket    = "fixture-datasets"
   activation_bucket = "fixture-activations"
+  analysis_bucket   = "fixture-analyses"
   ecr_repository    = "fixture-runtime"
   data_volume_id    = "vol-0123456789abcdef0"
   ssh_public_key    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureKeyOnlyForOfflineTests"
@@ -69,6 +74,14 @@ run "dev_resources" {
   assert {
     condition     = jsondecode(aws_iam_role_policy.activation_read.policy).Statement[1].Resource == "arn:aws:s3:::fixture-activations/runs/*" && toset(jsondecode(aws_iam_role_policy.activation_read.policy).Statement[1].Action) == toset(["s3:GetObject"]) && length(jsondecode(aws_iam_role_policy.activation_read.policy).Statement) == 2
     error_message = "Analysis reads must be limited to activation run objects."
+  }
+}
+
+run "analysis_output_access" {
+  command = plan
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.analysis_write.policy).Statement[0].Resource == "arn:aws:s3:::fixture-analyses/runs/*" && toset(jsondecode(aws_iam_role_policy.analysis_write.policy).Statement[0].Action) == toset(["s3:PutObject", "s3:AbortMultipartUpload"])
+    error_message = "Analysis publication must be restricted to result runs."
   }
 }
 

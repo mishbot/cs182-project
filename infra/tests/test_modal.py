@@ -27,7 +27,43 @@ cache_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cache_module)
 MODAL_AVAILABLE = importlib.util.find_spec("modal") is not None
 if MODAL_AVAILABLE:
-    from infra.modal import _runner as runner, collect_activations, infer
+    from infra.modal import _runner as runner, collect_activations, infer, analyze_activations
+
+
+@unittest.skipUnless(MODAL_AVAILABLE, "Install the modal extra")
+class ModalAnalysisTest(unittest.TestCase):
+    def test_gpu_entrypoint_uses_prepared_image_and_forwards_selection(self):
+        app = MagicMock()
+        app.run.return_value = nullcontext()
+        worker = MagicMock()
+        app.function.return_value.return_value = worker
+        credentials = {"AWS_REGION": "us-east-1"}
+        with patch.dict(os.environ, {"CS182_MODAL_IMAGE": "image", "ANALYSIS_URI": "s3://analyses/runs"}), \
+                patch.object(analyze_activations, "runtime_image", return_value="prepared") as image, \
+                patch.object(analyze_activations, "aws_environment", return_value=credentials), \
+                patch.object(analyze_activations.modal, "App", return_value=app), \
+                patch.object(analyze_activations.modal.Secret, "from_dict"), \
+                patch.object(analyze_activations.modal, "enable_output", return_value=nullcontext()):
+            analyze_activations.main(run_s3_uri="s3://activations/runs/fixture", include_adversarial=True)
+        image.assert_called_once_with("image")
+        options = worker.remote.call_args.args[0]
+        self.assertTrue(options['include_adversarial'])
+        self.assertEqual(options['output_s3_uri'], 's3://analyses/runs')
+        self.assertEqual(app.function.call_args.kwargs['gpu'], 'A100-40GB')
+        self.assertEqual(app.function.call_args.kwargs['memory'], 32768)
+        self.assertNotIn('volumes', app.function.call_args.kwargs)
+
+    def test_worker_uses_isolated_python_and_streams_logs(self):
+        with patch('subprocess.run') as run:
+            analyze_activations.execute_analysis(dict(run_s3_uri='s3://activations/runs/fixture',
+                                                     folds=5, include_adversarial=True))
+        command = run.call_args.args[0]
+        self.assertEqual(command[0], '/app/.analysis-venv/bin/python')
+        self.assertEqual(command[command.index('--backend') + 1], 'cuml')
+        self.assertIn('--include-adversarial', command)
+        self.assertTrue(run.call_args.kwargs['check'])
+        self.assertNotIn('capture_output', run.call_args.kwargs)
+        self.assertEqual(run.call_args.kwargs['env']['VIRTUAL_ENV'], '/app/.analysis-venv')
 
 
 class SnapshotCacheTest(unittest.TestCase):

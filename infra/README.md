@@ -16,6 +16,9 @@ uv >= 0.10.4, Python >= 3.10, and AWS credentials in the normal CLI/SDK credenti
 chain. The image pins Python
 3.11.12, PyTorch 2.6.0 with CUDA 12.4, Transformers 4.51.3, and PyArrow 19.0.1. Its CUDA wheels also
 support CPU inference; allow at least 16 GiB host RAM and several GB for downloads.
+The shared image also includes a CUDA 12.9 development toolkit and a separately
+locked cuML analysis environment. GPU hosts must meet that CUDA driver requirement;
+see [GPU analysis](analysis.md) for Modal execution and the new analyses bucket.
 CodeBuild builds linux/amd64 images natively; publishing needs no local Docker
 or amd64 emulation on an ARM workstation.
 
@@ -245,7 +248,7 @@ The dev stack creates its own public subnet and internet gateway without a NAT
 gateway. Only SSH is allowed inbound. The instance role can read the model and datasets buckets
 and pull this ECR repository. It can upload objects and abort multipart uploads
 only in the activation bucket. It can list and read activation runs under
-`runs/` for analysis; it cannot modify model/dataset snapshots or delete
+`runs/` for analysis and write result artifacts under analyses `runs/`; it cannot modify model/dataset snapshots or delete
 activation objects.
 IMDSv2 is required, with a hop limit of 2 so bridge-network containers can use
 the instance role. Anyone with Docker access effectively has root access and can
@@ -556,7 +559,7 @@ The deployment checks require a real AWS account and incur charges:
    with a short prompt. Check that a missing S3 prefix produces a clear error.
 3. Write a file under `/mnt/qwen/scratch`, stop/destroy/recreate the server as
    described above, and verify both the file and cached image/model remain.
-4. Destroy the dev stack and confirm all three buckets, ECR, and the EBS volume remain.
+4. Destroy the dev stack and confirm all four buckets, ECR, and the EBS volume remain.
 
 ## Costs and references
 

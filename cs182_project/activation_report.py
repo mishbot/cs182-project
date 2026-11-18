@@ -33,9 +33,9 @@ def _group_summary(analysis: ActivationAnalysis) -> JsonObject:
         "schema_version": 2,
         "group": analysis.group,
         "refusal_detector": {
-            "threshold": -5,
+            "threshold": 0,
             "comparison": ">",
-            **asdict(classification_metrics(analysis.harmful, analysis.refusal_metric > -5)),
+            **asdict(classification_metrics(analysis.harmful, analysis.refusal_metric > 0)),
         },
         "created_at": datetime.now(timezone.utc).isoformat(),
         "manifest_uri": analysis.manifest_uri,
@@ -241,6 +241,7 @@ def analysis_summary(analysis: ActivationAnalyses) -> JsonObject:
         "manifest_sha256": analysis.run.manifest_sha256,
         "source_manifest": analysis.run.manifest,
         "groups": {group.group: _group_summary(group) for group in analysis.groups},
+        "include_adversarial": any(group.group == "adversarial" for group in analysis.groups),
         "selected_directions": [
             {"name": item.name, "layer": item.layer, "valid": item.valid} for item in directions
         ],
@@ -255,7 +256,7 @@ def analysis_summary(analysis: ActivationAnalyses) -> JsonObject:
     }
 
 
-def _histogram(analysis: ActivationAnalyses) -> Figure:
+def _histogram(analysis: ActivationAnalyses, group: ActivationAnalysis) -> Figure:
     import numpy as np
     import plotly.graph_objects as go
 
@@ -265,27 +266,24 @@ def _histogram(analysis: ActivationAnalyses) -> Figure:
         low, high = low - 0.5, high + 0.5
     bins = {"start": low, "end": high + (high - low) / 40, "size": (high - low) / 40}
     figure = go.Figure()
-    colors = ["#2563eb", "#dc2626", "#0891b2", "#d97706"]
-    for group in analysis.groups:
-        for harmful in (False, True):
-            name = f"{group.group.replace('_', ' ')} / {'harmful' if harmful else 'harmless'}"
-            figure.add_trace(
-                go.Histogram(
-                    x=group.refusal_metric[group.harmful == harmful],
-                    name=name,
-                    xbins=bins,
-                    opacity=0.55,
-                    marker_color=colors[2 * int(group.group == "adversarial") + int(harmful)],
-                )
+    for harmful, color in [(False, "#2563eb"), (True, "#dc2626")]:
+        figure.add_trace(
+            go.Histogram(
+                x=group.refusal_metric[group.harmful == harmful],
+                name="Harmful" if harmful else "Harmless",
+                xbins=bins,
+                opacity=0.55,
+                marker_color=color,
             )
+        )
     figure.update_layout(
-        title="Refusal metric by input type",
+        title=f"Refusal metric: {group.group.replace('_', ' ')}",
         template="plotly_white",
         barmode="overlay",
         xaxis_title="Refusal metric",
         yaxis_title="Count",
     )
-    figure.add_vline(x=-5, line_dash="dash", annotation_text="Refusal > −5")
+    figure.add_vline(x=0, line_dash="dash", annotation_text="Refusal > 0")
     return figure
 
 
@@ -327,20 +325,15 @@ def _report_html(analysis: ActivationAnalyses, summary: JsonObject) -> str:
 table {{border-collapse:collapse;width:100%}} td,th {{padding:.55rem;border:1px solid #cbd5e1;text-align:right}}
 th {{background:#f1f5f9}} .best {{background:#dcfce7;font-weight:700}} pre {{white-space:pre-wrap;overflow-wrap:anywhere}}
 </style></head><body><h1>Activation analysis</h1><p>Run: <code>{escape(analysis.run.manifest_uri)}</code></p>
-<p>Adversarial and non-adversarial samples are fitted and evaluated separately. Metrics use pooled out-of-fold
+<p>Each enabled sample group is fitted and evaluated separately. Metrics use pooled out-of-fold
 predictions with fold-local fitting and standardization. Validation rows remain reserved when collecting the default training partition.
 Scores used to select layers are not independent held-out validation estimates.</p>
 <p>Refusal metric = log(P(refusal tokens)) − log(P(other tokens)); Qwen Chat refusal token IDs: 40, 2121.
-Refusal as a harmful-input detector uses the strict threshold &gt; −5. Harmful is the positive class.</p>"""
+Refusal as a harmful-input detector uses the strict threshold &gt; 0. Harmful is the positive class.</p>"""
     ]
     parts.append(
-        _histogram(analysis).to_html(
-            full_html=False, include_plotlyjs=True, div_id="refusal-histogram"
-        )
-    )
-    parts.append(
         _inner_product_figure(summary).to_html(
-            full_html=False, include_plotlyjs=False, div_id="inner-products"
+            full_html=False, include_plotlyjs=True, div_id="inner-products"
         )
     )
     for group in analysis.groups:
@@ -352,6 +345,11 @@ Refusal as a harmful-input detector uses the strict threshold &gt; −5. Harmful
             f"<p><strong>Best logistic F1 layer(s): {winners['logistic']}.</strong><br>"
             f"<strong>Best midpoint F1 layer(s): {winners['midpoint']}.</strong><br>"
             f"<strong>Best refusal regression R² layer(s): {winners['refusal_regression']}.</strong></p>"
+        )
+        parts.append(
+            _histogram(analysis, group).to_html(
+                full_html=False, include_plotlyjs=False, div_id=f"{group.group}-refusal-histogram"
+            )
         )
         detector = info["refusal_detector"]
         parts.append(
@@ -422,13 +420,17 @@ Refusal as a harmful-input detector uses the strict threshold &gt; −5. Harmful
     return "".join(parts)
 
 
-def write_analysis_report(analysis: ActivationAnalyses, output_dir: PathInput) -> Path:
+def write_analysis_report(
+    analysis: ActivationAnalyses, output_dir: PathInput, *, execution: JsonObject | None = None
+) -> Path:
     """Write HTML last, after all three artifacts have been generated successfully."""
     import numpy as np
 
     directory = Path(output_dir).expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
     summary = analysis_summary(analysis)
+    if execution is not None:
+        summary["execution"] = execution
     directions = selected_directions(analysis)
     vectors = np.stack([item.vector for item in directions])
     valid = np.array([item.valid for item in directions])

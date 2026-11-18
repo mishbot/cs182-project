@@ -72,6 +72,7 @@ class DiscoveryTest(unittest.TestCase):
             "MODEL_URI": f"s3://cs182-cddr-123456789012-us-east-1-models/models/Qwen1.5-1.8B-Chat/{MODEL_REVISION}",
             "DATASET_URI": f"s3://cs182-cddr-123456789012-us-east-1-datasets/datasets/wildguardmix/{self.new_sha}",
             "OUTPUT_URI": "s3://cs182-cddr-123456789012-us-east-1-activations/runs",
+            "ANALYSIS_URI": "s3://cs182-cddr-123456789012-us-east-1-analyses/runs",
         })
         self.s3.get_paginator.assert_called_once_with("list_objects_v2")
         self.ecr.get_paginator.assert_called_once_with("describe_images")
@@ -120,13 +121,13 @@ class DiscoveryTest(unittest.TestCase):
         self.session.client.assert_not_called()
 
     def test_cli_formats_values_and_does_not_print_partial_configuration_on_error(self):
-        expected = dict(CS182_MODAL_IMAGE="image:tag", MODEL_URI="model", DATASET_URI="dataset", OUTPUT_URI="output")
+        expected = dict(CS182_MODAL_IMAGE="image:tag", MODEL_URI="model", DATASET_URI="dataset", OUTPUT_URI="output", ANALYSIS_URI="analyses")
         with patch.dict(sys.modules, {"boto3": SimpleNamespace(Session=lambda: self.session)}), \
                 patch.object(sys, "argv", ["discover", "--project", "custom"]), \
                 patch.object(cli, "discover_modal_environment", return_value=expected) as discover, \
                 patch("sys.stdout", new_callable=io.StringIO) as stdout:
             self.assertEqual(cli.main(), 0)
-        self.assertEqual(stdout.getvalue(), "image:tag\tmodel\tdataset\toutput\n")
+        self.assertEqual(stdout.getvalue(), "image:tag\tmodel\tdataset\toutput\tanalyses\n")
         discover.assert_called_once_with(self.session, project="custom", region=None)
         with patch.dict(sys.modules, {"boto3": SimpleNamespace(Session=lambda: self.session)}), \
                 patch.object(sys, "argv", ["discover"]), \

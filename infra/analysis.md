@@ -1,211 +1,194 @@
 # Activation analysis
 
-The command reads a completed activation run from S3 and produces a standalone
-Plotly report. Computation runs on CPU, using the same library locally and on
-EC2. It does not load a model, contact Hugging Face, or use Modal/ECR.
+Analysis reads a completed activation run from S3, creates a standalone Plotly
+report, and exports the report and numerical artifacts to the dedicated
+`cs182-cddr-ACCOUNT-REGION-analyses` bucket. Core computation, rendering, and
+publication live in `cs182_project`, independently of EC2 or Modal.
 
-## Run locally
+By default **only non-adversarial samples are analyzed**. Pass
+`--include-adversarial` to add a completely separate adversarial analysis.
+Refusal is detected with the strict condition **`refusal_metric > 0`**.
 
-From the repository root, with AWS credentials already available:
+## Run on one Modal GPU
+
+First apply the new bucket configuration, and refresh exported dev-server inputs
+if you also use EC2:
 
 ```bash
-uv sync --locked --extra analysis
+source infra/scripts/aws-login.sh
+tofu -chdir=infra/persistent plan
+tofu -chdir=infra/persistent apply
+tofu -chdir=infra/persistent output -json dev_server_inputs > infra/dev-server/persistent.auto.tfvars.json
+# For EC2 users, review/apply infra/dev-server to grant result-upload access.
+```
+
+Commit and push these changes, then [rebuild the runtime through CodeBuild](codebuild/README.md).
+Prepare that new image once and run:
+
+```bash
+source infra/modal/env.sh
+uv run --locked --extra modal python -m infra.modal.prepare_image
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py
+```
+
+The default is one A100-40GB, four CPU cores, 32 GiB RAM, and a one-hour timeout.
+Use `--gpu`, `--memory` (MiB), and `--timeout` (seconds) to override. This job does
+not require an EC2 instance or AWS GPU quota. It reads inputs directly from S3;
+no activation tensors pass through your terminal. Modal streams logs, including
+cuML GPU dispatch and CPU fallbacks. The final output is the report's S3 URI.
+
+```bash
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
+  --run-s3-uri s3://ACTIVATION_BUCKET/runs/RUN_ID/manifest.json \
+  --include-adversarial --folds 5 --seed 0
+```
+
+The worker uses the ECR image's `/app/.analysis-venv`, managed by the separate
+uv project in `infra/analysis-runtime`. It pins cuML 26.10.0 and sklearn 1.9.1,
+without changing the inference environment. The image includes CUDA 12.9's
+**development** toolkit, including NVRTC, and uv-managed Python 3.11.12.
+`cuml.accel` is installed before sklearn imports. A missing GPU or inactive
+estimator interception fails explicitly before downloading data. Layer loops
+remain sequential; supported estimator operations run on the GPU. Float64 inputs
+are preserved, though GPU solvers can produce different fitted coefficients.
+
+The image and GPU dependency layers are larger than the earlier inference-only
+image. CodeBuild and Modal cache them. GPU duration, S3 storage/requests, and any
+applicable data transfer are billed; retaining only result artifacts on your
+workstation avoids repeatedly downloading activation tensors.
+
+## Run locally or on EC2
+
+The same command remains available on CPU:
+
+```bash
 uv run --locked --extra analysis python infra/scripts/analyze_activations.py
 ```
 
-The default is the latest completed run under `OUTPUT_URI` if that variable is
-set. Otherwise the command uses the current AWS account and region, and the
-standard `cs182-cddr-ACCOUNT-REGION-activations/runs` location. `CS182_PROJECT` or
-`--project` changes the project name; `--region` overrides the AWS session's
-region (falling back to `AWS_REGION`, then `us-east-1`). There is no need to run
-ECR/model/dataset discovery first.
+It retains local artifacts in `reports/activations/RUN_ID/` and also publishes
+results to S3. `--output-dir` changes the local location. GPU execution in the
+container uses `/app/.analysis-venv/bin/python /app/analyze_activations.py
+--backend cuml`; local CPU analysis needs no CUDA or cuML installation.
 
-Select another run or runs prefix explicitly:
+Both interfaces accept an exact `--run-s3-uri` (run directory or manifest) or
+`--activation-root-s3-uri`. Without either, latest selection uses `OUTPUT_URI`,
+then the standard project's activations `runs/` prefix. Selection uses completion
+manifest `LastModified` timestamps across all pages, ignoring incomplete runs.
+Corrupt or unsupported selected runs fail without falling back to older runs.
 
-```bash
-uv run --locked --extra analysis python infra/scripts/analyze_activations.py \
-  --run-s3-uri s3://ACTIVATION_BUCKET/runs/RUN_ID/manifest.json
+`--output-s3-uri` selects a results prefix; it defaults to `ANALYSIS_URI`, then
+the standard project's analyses `runs/` prefix. `--project` / `CS182_PROJECT` and
+`--region` control standard resource naming. Analysis alone needs no ECR/model
+lookup when run locally; it derives names using account identity and region.
 
-uv run --locked --extra analysis python infra/scripts/analyze_activations.py \
-  --activation-root-s3-uri s3://ACTIVATION_BUCKET/runs \
-  --folds 5 --seed 0 --output-dir reports/activations/my-experiment
+Schema-version-2 activations are required. Older runs lack probability data and
+must be recollected. Collection defaults to the new training partition, leaving
+validation reserved; see [collection setup](README.md#collect-wildguardmix-activations).
+Five-fold CV requires five harmful and five harmless samples **in each enabled
+group**. The four-way balanced collector needs 20 rows to meet this minimum.
+Sparse excluded adversarial groups do not block default analysis. Use fewer folds
+for smaller samples, with at least two examples of each enabled class.
+
+## Published artifacts and permissions
+
+Each execution gets a unique prefix:
+
+```text
+s3://ANALYSES_BUCKET/runs/ACTIVATION_RUN_ID/ANALYSIS_ID/
+  report.html
+  metrics.json
+  directions.npz
+  manifest.json
 ```
 
-`--run-s3-uri` also accepts the run directory without `/manifest.json` and takes
-precedence over the environment variable. It cannot be combined with an explicit
-`--activation-root-s3-uri`. Latest selection uses the S3 completion manifest's
-`LastModified` timestamp across all listing pages. Orphan shards and incomplete
-runs are ignored. Unsupported or corrupt selected runs fail clearly.
+The completion manifest is written last, after all artifact uploads succeed. It
+records source-run checksum, parameters, enabled groups, strict refusal threshold,
+backend/GPU and versions, artifact sizes/checksums, and download/analysis/render/
+upload timings. Download includes reading and verifying Parquet; upload timing
+excludes the final completion-marker request. Failed uploads can leave orphan
+artifacts but never publish a successful completion marker.
 
-Analysis requires schema-version-2 activation runs containing `adversarial` and
-next-token probability data. Older runs must be recollected with a rebuilt
-runtime image. Publish membership using `partition_dataset.py` before collection;
-see [collection setup](README.md#collect-wildguardmix-activations).
+The bucket is private, encrypted, TLS-only, and protected from forced destruction.
+To view a report, copy its printed URI locally, then open the HTML:
 
-Five-fold evaluation requires at least five examples in **each** of the four
-harmful/harmless × adversarial/non-adversarial groups (at least 20 rows with the
-new balanced sampler). `--folds 2` requires at least two in each group. Sparse
-groups fail clearly. The default collector uses only the new training partition;
-validation is reserved, rather than used by this cross-validation analysis.
+```bash
+aws s3 cp s3://ANALYSES_BUCKET/runs/RUN_ID/ANALYSIS_ID/report.html ./report.html
+```
 
-Progress goes to stderr; the final stdout line is the HTML report's absolute
-path. Open that file in a browser. The command does not launch a browser or
-upload outputs. With the default output directory, files go into
-`reports/activations/RUN_ID/` (ignored by Git). Re-running an analysis in the same
-output directory replaces its results after computation and artifact generation
-succeed.
+Credentials forwarded to Modal need `s3:ListBucket` for activation discovery,
+`s3:GetObject` for activation runs, and `s3:PutObject` / `s3:AbortMultipartUpload`
+for analyses `runs/*`. `sts:GetCallerIdentity` resolves standard names. Reading
+published results additionally requires `s3:GetObject` on the analyses prefix.
+The updated dev-server role grants scoped result writes; Modal uses your current
+workstation credentials rather than that instance role. No bucket is made public.
 
-## Contents of the report
+## Report and numerical outputs
 
-The report contains completely separate adversarial and non-adversarial analyses:
+Each enabled group has classifier precision, recall, F1, highlighted best-F1
+layers, and refusal Ridge regression R², RMSE, and MAE. Layer-selectable plots show
+the same activation coordinates colored by harmfulness or refusal metric.
+Continuous color limits are shared across enabled groups.
 
-- Per-layer logistic and mean-difference classifier precision, recall, and F1.
-  Every layer tied for best F1 is highlighted.
-- Per-layer refusal Ridge regression R², RMSE, and MAE, highlighting best R².
-- Layer-selectable scatterplots colored by harmfulness and matching plots colored
-  continuously by refusal metric. Refusal color limits are shared across groups.
-- Refusal precision, recall, F1, and confusion counts as a harmful-input detector,
-  using the strict threshold `refusal_metric > -5`.
+Histograms are separate: one compares non-adversarial harmful/harmless samples;
+when enabled, another compares adversarial harmful/harmless samples. They share
+bins and each marks the zero threshold. Each group also reports refusal as a
+harmful-input detector: precision, recall, F1, and confusion counts.
 
-A common-bin histogram compares the four input categories, marking the threshold.
-A heatmap compares six selected unit directions: logistic, mean difference, and
-refusal regression for each subgroup. Names include their source layers.
-Plotly.js is embedded once, so the report works offline. Hover text includes
+A heatmap compares three selected unit directions per enabled group (three by
+default, six with adversarial analysis). Names include their source layers.
+The HTML embeds Plotly.js once and works offline. Hover text includes original
 source indices, fold IDs, prompt excerpts, and refusal metrics.
 
-Every run produces `report.html`, `metrics.json`, and `directions.npz`. JSON
-contains subgroup metrics, all tied best layers, selection/provenance settings,
-source manifest checksum, versions, and the direction inner-product matrix.
+`metrics.json` contains full-precision metrics, all tied best layers, provenance,
+settings, versions, and the inner-product matrix. Load `directions.npz` using
+`numpy.load(path, allow_pickle=False)`. Top-level arrays include input row indices,
+labels, `selected_directions` `[3 or 6, hidden]`, `selected_names`, `selected_layers`,
+`selected_valid`, and `inner_products`. Unavailable directions use zero vectors,
+false validity flags, and NaN matrix entries (JSON uses null); absent winning
+layers use index -1.
 
-Load NPZ using `numpy.load(path, allow_pickle=False)`. Top-level arrays include
-`source_row_indices`, `harmful`, `adversarial`, `selected_directions` `[6, hidden]`,
-`selected_names`, `selected_layers`, `selected_valid`, and `inner_products` `[6, 6]`.
-Unavailable directions have zero vectors, a false validity flag, and NaN matrix
-entries (JSON uses null). Missing winning layers use index -1.
+Per-group arrays are prefixed `non_adversarial__` or `adversarial__`:
 
-Subgroup arrays have prefixes `non_adversarial__` or `adversarial__`:
+- Means, raw `differences`, normalized `directions`, and `orthogonal_pc1`:
+  `[layers, hidden]`.
+- `logistic_directions`, `refusal_directions`, corresponding `*_coefficients`,
+  `*_intercepts`, and `*_valid`. Coefficients/intercepts are converted back to raw
+  activation coordinates before normalization.
+- `coordinates` `[layers, subgroup_rows, 2]`, out-of-fold classifier and regression
+  predictions, and midpoint validity masks.
+- Subgroup source indices, labels, fold IDs, and refusal metrics.
 
-- `harmful_means`, `harmless_means`, `differences`, `directions`, and
-  `orthogonal_pc1`: `[layers, hidden]`; `directions` is normalized mean difference.
-- `logistic_directions`, `refusal_directions`, their corresponding `*_coefficients`
-  `[layers, hidden]`, `*_intercepts` and `*_valid` `[layers]`. Coefficients and
-  intercepts use raw activation coordinates, undoing feature standardization.
-- `midpoint_direction_valid` `[layers]` marks defined full-subgroup mean directions.
-- `coordinates` `[layers, subgroup_rows, 2]`; `logistic_predictions`,
-  `midpoint_predictions`, `midpoint_valid`, and `refusal_predictions`
-  `[layers, subgroup_rows]`. Predictions are out of fold.
-- `source_row_indices`, `harmful`, `fold_ids`, and `refusal_metric` `[subgroup_rows]`.
+Decoder layers and original Parquet indices are zero-based. Excluded groups have
+no per-group arrays; top-level input metadata still describes the source run.
 
-Original source indices reference the official input Parquet, before partitioning
-or filtering. Decoder layers are zero-based.
-
-## Refusal metric
+## Refusal metric and evaluation
 
 Following [the paper, Appendix B](https://arxiv.org/html/2406.11717v3), the metric
-is `log(P_refusal) - log(P_nonrefusal)`. For Qwen Chat the refusal set is token IDs
-`{40, 2121}` (`I`, `As`). Collection verifies this tokenizer mapping and computes
-both log masses with stable log-sum-exp over the full next-token vocabulary.
-Analysis subtracts the stored masses. It never estimates refusal from the top
-100 tokens or renormalizes those probabilities. This remains finite even when
-refusal tokens are outside the top 100 or their probabilities are extreme.
+is `log(P_refusal) - log(P_nonrefusal)`. Qwen Chat's refusal set is `{40, 2121}`
+(`I`, `As`). Collection verifies the tokenizer mapping and computes stable log
+masses over the full vocabulary. Analysis never estimates refusal from only the
+top 100 tokens or renormalizes those probabilities. Exactly zero is **not**
+classified as refusal.
 
-The `-5` threshold is the requested detector threshold, independently of layer
-selection or classifier fitting; the histogram includes all four categories.
+For each layer, descriptive geometry uses `r = harmful_mean - harmless_mean`.
+The horizontal coordinate projects onto normalized r, centered at the midpoint
+of class means. The vertical axis is PC1 of centered activations after removing
+r's component. Means/PCA use the entire enabled subgroup; evaluation fits each
+fold independently on the original activation features.
 
-## Geometry and evaluation
+Within each group, all methods share shuffled stratified folds. Metrics pool
+out-of-fold predictions. Harmful is positive; zero-denominator scores are zero.
+Logistic regression uses training-fold standardization, L2 regularization with
+`C=1`, and up to 1,000 iterations. Ridge uses training-fold standardization and
+`alpha=1`. The midpoint classifier uses training-fold class means directly.
+Constant refusal targets have undefined R² and are excluded from regression
+ranking. Degenerate directions are marked unavailable.
 
-For each layer the descriptive direction is
-
-$$r = \mu_h - \mu_u, \qquad m = (\mu_h + \mu_u)/2.$$
-
-The scatterplot's horizontal coordinate is $(x-m)^T\hat r$, where
-$\hat r=r/\|r\|$. The vertical axis is the first principal component of the
-centered activations projected onto the orthogonal complement of $r$. PCA uses
-full SVD. The component is reorthogonalized and normalized, with a deterministic
-sign convention. The dashed line at zero is the descriptive full-run
-midpoint boundary.
-
-The plots use the full subgroup. Within each subgroup, metrics use a shared,
-shuffled stratified K-fold partition for every layer and all three methods. Each example
-receives exactly one out-of-fold prediction. Precision, recall, and F1 are
-computed from the pooled predictions, not averaged fold scores. Harmful is
-positive; zero-denominator scores are zero.
-
-- Logistic regression uses the original activation features, training-fold
-  `StandardScaler`, L2 regularization with `C=1`, the `liblinear` solver, and
-  at most 1,000 iterations. Nonconvergence fails with the layer and fold number.
-- The midpoint classifier fits both means on training rows only and predicts
-  harmful when $(x-m_{train})^T r_{train} \geq 0$. It does not scale features.
-
-- Refusal regression uses training-fold `StandardScaler` and Ridge with
-  `alpha=1`, solver `lsqr`, tolerance `1e-8`. R², RMSE, and MAE are computed on
-  pooled out-of-fold predictions. Constant targets have undefined R² and are
-  excluded from layer ranking.
-
-Select classifiers by highest F1 and refusal regression by highest R². All exact
-ties are highlighted; the earliest tied layer supplies each selected direction.
-Models are refitted on all subgroup rows to export coefficients. Logistic
-coefficients point toward harmful predictions; refusal coefficients point toward
-increasing refusal metric. The mean-difference direction points from harmless
-to harmful means. All directions are normalized **after** conversion to raw
-activation coordinates. A zero coefficient is marked unavailable. Inner products
-compare residual-stream coordinates, potentially from different source layers;
-they do not establish causal equivalence.
-
-The descriptive projections never enter the evaluated classifiers. If a training
-fold has identical class means, that layer's midpoint metrics are unavailable
-and excluded from ranking. A zero full-run direction or zero residual variance
-is flagged in the report, and the corresponding scatterplot axis is collapsed
-to zero. Layer selection is exploratory cross-validation ranking, not an
-independent test of the selected winning layer.
-
-## EC2 and container use
-
-Apply the updated dev-server stack to enable read access with its instance role:
-
-```bash
-tofu -chdir=infra/dev-server plan
-tofu -chdir=infra/dev-server apply
-```
-
-The added role policy grants only `s3:GetObject` for `runs/*` and
-`s3:ListBucket` scoped to that prefix. Existing activation writes are unchanged.
-Other prefixes require a reader profile or permissions appropriate to that
-prefix. No infrastructure apply is performed by the analysis command.
-
-On an EC2 checkout, use the same uv command as locally; boto3 uses the instance
-profile. New runtime images also include the analysis dependencies and CLI.
-After rebuilding and pulling an updated image, it can run without a GPU:
-
-```bash
-docker run --rm --entrypoint python \
-  -e AWS_DEFAULT_REGION=us-east-1 \
-  -v /mnt/qwen/scratch/activation-analysis:/reports \
-  "$REPOSITORY:$IMAGE_TAG" /app/analyze_activations.py --output-dir /reports
-```
-
-The output volume preserves the report after container exit. Copy `report.html`
-from the host to your workstation to view it. Keep the JSON and NPZ files for
-numerical reuse and reproducibility. Workstation readers need `s3:ListBucket`
-for latest selection and `s3:GetObject` for the selected run and its shards;
-selecting a run explicitly does not require listing the bucket.
-
-RAM for input vectors scales as `rows × layers × hidden_size × 4` bytes, plus
-one shard and temporary float64 matrices for the current layer. A 1,000-row,
-24-layer, 2,048-component run uses about 188 MiB for the input tensor. Shard
-checksums, dimensions, labels, row counts, and finite values are verified before
-analysis; activation vectors are not expanded into Python float lists.
-
-## Library API
-
-- `activation_runs.latest_activation_run(s3, root_uri)` selects a completed run.
-- `activation_runs.load_activation_run(s3, run_uri)` returns a typed
-  `ActivationRun` with numeric arrays and provenance.
-- `activation_analysis.analyze_activations(run, folds=5, seed=0)` performs pure
-  CPU analysis, returning `ActivationAnalyses` with separate subgroup results,
-  independent of AWS clients and output paths.
-- `activation_report.write_analysis_report(result, output_dir)` writes artifacts
-  and returns the HTML path.
-
-Callers can construct an `ActivationRun` directly to analyze arrays from another
-source. Source loading, statistical computation, and rendering are separate.
+Select classifiers by highest F1 and regression by highest R². Highlight every
+exact tie; use the earliest tied layer for the selected direction. Models are
+refitted on all subgroup rows for coefficient export. Classifier directions point
+toward harmful predictions and regression directions toward increasing refusal.
+Scores used for layer selection are exploratory CV results, not independent
+held-out validation estimates. GPU coefficients need not equal CPU coefficients;
+compare predictive quality and geometric invariants. Source-layer labels remain
+visible when comparing directions from different layers.
