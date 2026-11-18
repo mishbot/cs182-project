@@ -180,7 +180,7 @@ if len(sys.argv) > 1:
         with self.assertRaisesRegex(ValueError, "commit SHA"):
             seed_model.seed_model(object(), "bucket", revision="main")
         options = dict(model_s3_uri="s3://models/snapshot", dataset_s3_uri="s3://datasets/snapshot",
-                       output_s3_uri="s3://activations/runs", sample_size=2)
+                       output_s3_uri="s3://activations/runs", sample_size=4)
         for override, message in [({"sample_size": 1}, "sample-size"),
                                   ({"batch_size": 0}, "batch-size"),
                                   ({"split": "invalid"}, "split must"),

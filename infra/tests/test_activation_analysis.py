@@ -25,16 +25,20 @@ if AVAILABLE:
 
 
 def fixture_run():
-    labels = np.tile([False, True], 10)
-    features = np.column_stack([np.where(labels, 4., -4.), np.tile([-2., -1., 0., 1., 2.], 4), np.zeros(20)])
+    labels = np.tile([False, True], 20)
+    features = np.column_stack([np.where(labels, 4., -4.), np.tile([-2., -1., 0., 1., 2.], 8), np.zeros(40)])
     values = np.stack([features, np.zeros_like(features), features], axis=1).astype(np.float32)
-    manifest = dict(schema_version=1, status="complete", run_id="fixture", row_count=20, sample_size=20,
+    manifest = dict(schema_version=2, status="complete", run_id="fixture", row_count=40, sample_size=40,
                     num_layers=3, hidden_size=3, layer_index_base=0,
-                    selected_source_row_indices=list(range(100, 120)),
-                    class_counts={"harmful": 10, "unharmful": 10})
+                    selected_source_row_indices=list(range(100, 140)),
+                    class_counts={"harmful": 20, "unharmful": 20})
     return runs.ActivationRun("s3://activations/runs/fixture/manifest.json", "0" * 64,
-                              manifest, np.arange(100, 120, dtype=np.int64),
-                              ['prompt </script><script>window.bad=1</script> & text'] * 20, labels, values)
+                              manifest, np.arange(100, 140, dtype=np.int64),
+                              ['prompt </script><script>window.bad=1</script> & text'] * 40, labels, values,
+                              np.repeat([False, True], 20),
+                              -np.logaddexp(0, -(features[:, 0] * .3 + features[:, 1] * 2 - 5)),
+                              -np.logaddexp(0, features[:, 0] * .3 + features[:, 1] * 2 - 5),
+                              np.tile(np.arange(100, dtype=np.int32), (40, 1)), np.full((40, 100), .001))
 
 
 class MemoryRunS3:
@@ -66,9 +70,14 @@ class ActivationLoadingTest(unittest.TestCase):
         self.key = "runs/fixture/manifest.json"
         self.rows = [dict(source_row_index=int(index), prompt=prompt, harmful=bool(flag),
                           prompt_harm_label="harmful" if flag else "unharmful",
-                          formatted_input_token_count=3, activations=vector.tolist())
-                     for index, prompt, flag, vector in zip(self.run.source_row_indices, self.run.prompts,
-                                                           self.run.harmful, self.run.activations)]
+                          formatted_input_token_count=3, activations=vector.tolist(),
+                          adversarial=bool(self.run.adversarial[i]),
+                          refusal_log_probability=float(self.run.refusal_log_probability[i]),
+                          nonrefusal_log_probability=float(self.run.nonrefusal_log_probability[i]),
+                          top_token_ids=self.run.top_token_ids[i].tolist(),
+                          top_token_probabilities=self.run.top_token_probabilities[i].tolist())
+                     for i, (index, prompt, flag, vector) in enumerate(zip(self.run.source_row_indices, self.run.prompts,
+                                                           self.run.harmful, self.run.activations))]
         self.schema = activation_schema(3, 3)
         self.write_shard()
 
@@ -77,7 +86,7 @@ class ActivationLoadingTest(unittest.TestCase):
         pq.write_table(pa.Table.from_pylist(self.rows, schema=self.schema), buffer)
         data = buffer.getvalue().to_pybytes()
         self.s3.objects["runs/fixture/part-00000.parquet"] = data
-        self.manifest = dict(self.run.manifest, shards=[dict(key="runs/fixture/part-00000.parquet", rows=20,
+        self.manifest = dict(self.run.manifest, shards=[dict(key="runs/fixture/part-00000.parquet", rows=40,
                                                            size=len(data), sha256=hashlib.sha256(data).hexdigest())])
         self.write_manifest()
 
@@ -116,7 +125,7 @@ class ActivationLoadingTest(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "hidden dimensions"):
             runs.load_activation_run(self.s3, self.run.manifest_uri)
         self.write_shard()
-        self.manifest["class_counts"] = {"harmful": 9, "unharmful": 11}
+        self.manifest["class_counts"] = {"harmful": 19, "unharmful": 21}
         self.write_manifest()
         with self.assertRaisesRegex(ValueError, "Class counts"):
             runs.load_activation_run(self.s3, self.run.manifest_uri)
@@ -124,6 +133,22 @@ class ActivationLoadingTest(unittest.TestCase):
         self.manifest["shards"][0]["key"] = "runs/another-run/part.parquet"
         self.write_manifest()
         with self.assertRaisesRegex(ValueError, "within the selected run"):
+            runs.load_activation_run(self.s3, self.run.manifest_uri)
+
+    def test_legacy_runs_and_invalid_new_columns_are_rejected(self):
+        self.manifest['schema_version'] = 1
+        self.write_manifest()
+        with self.assertRaisesRegex(ValueError, 'Recollect'):
+            runs.load_activation_run(self.s3, self.run.manifest_uri)
+        self.write_shard()
+        self.rows[0]['nonrefusal_log_probability'] = -20.
+        self.write_shard()
+        with self.assertRaisesRegex(ValueError, 'log-probability'):
+            runs.load_activation_run(self.s3, self.run.manifest_uri)
+        self.rows[0]['nonrefusal_log_probability'] = float(self.run.nonrefusal_log_probability[0])
+        self.rows[0]['top_token_probabilities'][1] = 0.5
+        self.write_shard()
+        with self.assertRaisesRegex(ValueError, 'top-100'):
             runs.load_activation_run(self.s3, self.run.manifest_uri)
 
     def test_nonfinite_activations_and_inconsistent_labels_are_rejected(self):
@@ -175,26 +200,28 @@ class ActivationMathTest(unittest.TestCase):
         with patch.object(StandardScaler, "fit", new=record_fit), \
                 patch.object(analysis, "midpoint_predict", wraps=analysis.midpoint_predict) as midpoint:
             result = analysis.analyze_activations(run, folds=5, seed=7)
-        self.assertEqual(len(fits), 15)
-        for layer in range(3):
-            for fold in range(5):
-                expected = run.activations[result.fold_ids != fold, layer, :]
-                np.testing.assert_array_equal(fits[layer*5+fold], expected)
-                np.testing.assert_array_equal(midpoint.call_args_list[layer*5+fold].args[0], expected)
-        self.assertEqual(analysis.best_layers(result, "logistic"), [0, 2])
-        self.assertEqual(analysis.best_layers(result, "midpoint"), [0, 2])
-        self.assertEqual(result.layers[0].logistic.f1, 1)
-        self.assertIsNone(result.layers[1].midpoint)
-        self.assertFalse(result.layers[1].midpoint_valid.any())
-        np.testing.assert_array_equal(np.bincount(result.fold_ids), [4]*5)
+        self.assertEqual(len(fits), 36)
+        for group_index, group in enumerate(result.groups):
+            subset = run.activations[run.adversarial == bool(group_index)]
+            for layer in range(3):
+                for fold in range(5):
+                    expected = subset[group.fold_ids != fold, layer, :]
+                    np.testing.assert_array_equal(fits[group_index*18+layer*6+fold], expected)
+                    np.testing.assert_array_equal(midpoint.call_args_list[group_index*15+layer*5+fold].args[0], expected)
+            self.assertEqual(analysis.best_layers(group, "logistic"), [0, 2])
+            self.assertEqual(analysis.best_layers(group, "midpoint"), [0, 2])
+            self.assertEqual(group.layers[0].logistic.f1, 1)
+            self.assertIsNone(group.layers[1].midpoint)
+            self.assertFalse(group.layers[1].midpoint_valid.any())
+            np.testing.assert_array_equal(np.bincount(group.fold_ids), [4]*5)
 
     def test_degenerate_axes_small_runs_and_nonconvergence(self):
         run = fixture_run()
         projection = analysis.project_layer(run.activations[:, 1].astype(np.float64), run.harmful)
-        np.testing.assert_array_equal(projection.coordinates, np.zeros((20, 2)))
+        np.testing.assert_array_equal(projection.coordinates, np.zeros((40, 2)))
         self.assertTrue(projection.notes)
         with self.assertRaisesRegex(ValueError, "class count"):
-            analysis.analyze_activations(replace(run, harmful=np.array([True]*19+[False])), folds=5)
+            analysis.analyze_activations(replace(run, harmful=np.array([True]*39+[False])), folds=5)
         from sklearn.exceptions import ConvergenceWarning
         with patch("sklearn.linear_model.LogisticRegression.fit", side_effect=ConvergenceWarning("not converged")):
             with self.assertRaisesRegex(ValueError, "layer 0, fold 0"):
@@ -219,14 +246,81 @@ class ActivationMathTest(unittest.TestCase):
             self.assertTrue(scripts)
             self.assertTrue(all('src' not in attributes for attributes in scripts))
             summary = json.loads((Path(directory)/"metrics.json").read_text())
-            self.assertEqual(summary['best_layers'], {'logistic': [0, 2], 'midpoint': [0, 2]})
-            self.assertEqual(summary['evaluation']['folds'], 5)
-            self.assertEqual(summary['manifest_uri'], result.manifest_uri)
+            self.assertEqual(summary['groups']['non_adversarial']['best_layers']['logistic'], [0, 2])
+            self.assertEqual(summary['groups']['non_adversarial']['evaluation']['folds'], 5)
+            self.assertEqual(summary['manifest_uri'], result.run.manifest_uri)
             with np.load(Path(directory)/"directions.npz", allow_pickle=False) as arrays:
-                self.assertEqual(arrays['differences'].shape, (3, 3))
-                np.testing.assert_allclose(arrays['differences'][0], [8, 0, 0])
-                self.assertEqual(arrays['logistic_predictions'].shape, (3, 20))
-                np.testing.assert_array_equal(arrays['fold_ids'], result.fold_ids)
+                self.assertEqual(arrays['non_adversarial__differences'].shape, (3, 3))
+                np.testing.assert_allclose(arrays['non_adversarial__differences'][0], [8, 0, 0])
+                self.assertEqual(arrays['non_adversarial__logistic_predictions'].shape, (3, 20))
+                np.testing.assert_array_equal(arrays['non_adversarial__fold_ids'], result.groups[0].fold_ids)
+
+
+@unittest.skipUnless(AVAILABLE, "Install the analysis extra")
+class RefusalAnalysisTest(unittest.TestCase):
+    def test_refusal_metric_and_strict_threshold_have_known_confusion_counts(self):
+        values = np.array([-10., -5., -4., 0.])
+        log_refusal = -np.logaddexp(0, -values)
+        log_nonrefusal = -np.logaddexp(0, values)
+        np.testing.assert_allclose(analysis.refusal_metric(log_refusal, log_nonrefusal), values)
+        metrics = analysis.classification_metrics(np.array([False, True, False, True]), values > -5)
+        self.assertEqual((metrics.tp, metrics.fp, metrics.tn, metrics.fn), (1, 1, 1, 1))
+        self.assertEqual((metrics.precision, metrics.recall, metrics.f1), (.5, .5, .5))
+        with self.assertRaisesRegex(ValueError, "normalized"):
+            analysis.refusal_metric(np.zeros(4), np.zeros(4))
+
+    def test_regression_and_exported_raw_coefficients_match_independent_fit(self):
+        from sklearn.linear_model import LogisticRegression, Ridge
+        run = fixture_run()
+        run = replace(run, activations=run.activations * np.array([3., 100., 1.], dtype=np.float32))
+        result = analysis.analyze_activations(run)
+        selected = analysis.selected_directions(result)
+        self.assertEqual(len(selected), 6)
+        for group in result.groups:
+            subset = run.activations[run.adversarial == (group.group == 'adversarial')]
+            features = subset[:, 0].astype(np.float64)
+            scaler = StandardScaler().fit(features)
+            for fitted, expected in [
+                (group.layers[0].logistic_fit,
+                 LogisticRegression(C=1, solver='liblinear', max_iter=1000, random_state=0).fit(scaler.transform(features), group.harmful)),
+                (group.layers[0].refusal_fit,
+                 Ridge(alpha=1, solver='lsqr', tol=1e-8).fit(scaler.transform(features), group.refusal_metric))]:
+                coefficients = np.asarray(expected.coef_).reshape(-1) / scaler.scale_
+                np.testing.assert_allclose(fitted.coefficient, coefficients)
+                self.assertAlmostEqual(fitted.intercept, float(np.asarray(expected.intercept_).reshape(-1)[0] - coefficients @ scaler.mean_))
+                self.assertAlmostEqual(np.linalg.norm(fitted.direction), 1)
+            self.assertGreater(group.layers[0].refusal_regression.r2, .98)
+            self.assertEqual(analysis.best_regression_layers(group), [0, 2])
+        with tempfile.TemporaryDirectory() as directory:
+            report.write_analysis_report(result, directory)
+            with np.load(Path(directory)/'directions.npz', allow_pickle=False) as arrays:
+                directions = arrays['selected_directions']
+                np.testing.assert_allclose(arrays['inner_products'], directions @ directions.T)
+                np.testing.assert_allclose(np.linalg.norm(directions, axis=1), 1)
+                self.assertEqual(directions.shape, (6, 3))
+                self.assertEqual(arrays['selected_layers'].tolist(), [0]*6)
+            summary = json.loads((Path(directory)/'metrics.json').read_text())
+            figure = report._histogram(result)
+            self.assertEqual(len(figure.data), 4)
+            self.assertEqual(len({trace.xbins.size for trace in figure.data}), 1)
+            self.assertEqual(summary['groups']['adversarial']['refusal_detector']['threshold'], -5)
+
+    def test_subgroups_are_independent_and_constant_targets_are_flagged(self):
+        run = fixture_run()
+        original = analysis.analyze_activations(run)
+        features = run.activations.copy()
+        features[run.adversarial] += 100
+        changed = analysis.analyze_activations(replace(run, activations=features))
+        for old, new in zip(original.groups[0].layers, changed.groups[0].layers):
+            np.testing.assert_array_equal(old.logistic_fit.coefficient, new.logistic_fit.coefficient)
+            np.testing.assert_array_equal(old.refusal_fit.coefficient, new.refusal_fit.coefficient)
+            np.testing.assert_array_equal(old.refusal_predictions, new.refusal_predictions)
+        targets = np.full(40, -5.)
+        constant = analysis.analyze_activations(replace(run, refusal_log_probability=-np.logaddexp(0, -targets),
+                                                       nonrefusal_log_probability=-np.logaddexp(0, targets)))
+        self.assertEqual(analysis.best_regression_layers(constant.groups[0]), [])
+        self.assertFalse(analysis.selected_directions(constant)[2].valid)
+        self.assertIsNone(constant.groups[0].layers[0].refusal_regression.r2)
 
 
 if __name__ == "__main__":

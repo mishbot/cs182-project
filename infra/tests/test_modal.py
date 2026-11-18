@@ -286,7 +286,7 @@ class ModalAdapterTest(unittest.TestCase):
         self.assertEqual(stdout.getvalue(), "s3://results/run/manifest.json\n")
         self.assertEqual(run.call_args.args, ("collect_activations", dict(
             model_s3_uri="s3://models/snapshot", dataset_s3_uri="s3://datasets/snapshot",
-            output_s3_uri="s3://results/runs", sample_size=5, split="test", seed=7,
+            output_s3_uri="s3://results/runs", sample_size=5, split="test", partition_s3_uri=None, seed=7,
             batch_size=2, max_input_tokens=512, device="cuda",
         )))
 

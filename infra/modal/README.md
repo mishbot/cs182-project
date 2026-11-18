@@ -108,6 +108,21 @@ local entrypoint after the remote call completes.
 
 ## Activation collection
 
+First publish the default membership file once from your workstation:
+
+```bash
+uv run --locked --extra seed python infra/scripts/partition_dataset.py \
+  --dataset-s3-uri "$DATASET_URI"
+```
+
+This requires operator write access to the datasets bucket. GPU jobs only read
+it. Default collection uses the new training partition (80/20, seed 0); validation
+remains reserved. `--partition-s3-uri` selects a nondefault membership file.
+The published runtime image must contain the updated library: rebuild it with
+CodeBuild, source `infra/modal/env.sh`, then prepare that image again before
+collecting. See [CodeBuild](../codebuild/README.md) for the rebuild command.
+
+
 ```bash
 uv run --locked --extra modal modal run infra/modal/collect_activations.py \
   --model-s3-uri "$MODEL_URI" \
@@ -116,7 +131,10 @@ uv run --locked --extra modal modal run infra/modal/collect_activations.py \
   --sample-size 1000 --seed 0 --batch-size 4 --max-input-tokens 2048
 ```
 
-This calls the image's `collect` function. Balanced sampling, preflight checks,
+This calls the image's `collect` function. Sampling balances harmfulness ×
+adversarial status (at least 20 samples for five-fold analysis). Adversarial
+labels, top-100 next-token probabilities, and exact refusal log masses accompany
+the activations. Sampling, preflight checks,
 layer hooks, in-memory Parquet sharding, and completion-manifest semantics are
 identical to `infra/scripts/collect_activations.py`. The final result is the S3
 completion-manifest URI. No activation files are stored in the Modal Volume or

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -34,6 +35,11 @@ class ActivationRun:
     prompts: list[str]
     harmful: NDArray[np.bool_]
     activations: NDArray[np.float32]  # [row, decoder layer, hidden component]
+    adversarial: NDArray[np.bool_]
+    refusal_log_probability: NDArray[np.float64]
+    nonrefusal_log_probability: NDArray[np.float64]
+    top_token_ids: NDArray[np.int32]
+    top_token_probabilities: NDArray[np.float64]
 
 
 def activation_root(
@@ -99,8 +105,10 @@ def _positive_integer(value: object, name: str) -> int:
 
 
 def _validate_manifest(manifest: JsonObject, prefix: str) -> tuple[int, int, int, list[Shard]]:
-    if manifest.get("schema_version") != 1 or manifest.get("status") != "complete":
-        raise ValueError("Expected a completed schema-version-1 activation run.")
+    if manifest.get("schema_version") != 2 or manifest.get("status") != "complete":
+        raise ValueError(
+            "Expected a completed schema-version-2 activation run. Recollect older runs to include adversarial labels and next-token probabilities."
+        )
     if not isinstance(manifest.get("run_id"), str) or not re.fullmatch(
         r"[A-Za-z0-9_-]+", manifest["run_id"]
     ):
@@ -157,6 +165,11 @@ def load_activation_run(s3: S3Client, run_uri: str) -> ActivationRun:
     rows, layers, hidden, shards = _validate_manifest(manifest, prefix)
     activations = np.empty((rows, layers, hidden), dtype=np.float32)
     harmful = np.empty(rows, dtype=np.bool_)
+    adversarial = np.empty(rows, dtype=np.bool_)
+    refusal = np.empty(rows, dtype=np.float64)
+    nonrefusal = np.empty(rows, dtype=np.float64)
+    top_ids = np.empty((rows, 100), dtype=np.int32)
+    top_probabilities = np.empty((rows, 100), dtype=np.float64)
     indices = np.empty(rows, dtype=np.int64)
     prompts: list[str] = []
     seen_indices: set[int] = set()
@@ -174,6 +187,11 @@ def load_activation_run(s3: S3Client, run_uri: str) -> ActivationRun:
                 "prompt_harm_label",
                 "harmful",
                 "activations",
+                "adversarial",
+                "refusal_log_probability",
+                "nonrefusal_log_probability",
+                "top_token_ids",
+                "top_token_probabilities",
             ],
         )
         if table.num_rows != shard["rows"]:
@@ -204,6 +222,7 @@ def load_activation_run(s3: S3Client, run_uri: str) -> ActivationRun:
                 or source < 0
                 or source in seen_indices
                 or type(flag) is not bool
+                or type(row["adversarial"]) is not bool
                 or label != ("harmful" if flag else "unharmful")
                 or not isinstance(prompt, str)
                 or not prompt.strip()
@@ -212,6 +231,34 @@ def load_activation_run(s3: S3Client, run_uri: str) -> ActivationRun:
             seen_indices.add(source)
             indices[index], harmful[index] = source, flag
             prompts.append(prompt)
+            adversarial[index] = row["adversarial"]
+            log_ref, log_nonref = row["refusal_log_probability"], row["nonrefusal_log_probability"]
+            ids, probabilities = row["top_token_ids"], row["top_token_probabilities"]
+            if (
+                not isinstance(log_ref, (int, float))
+                or not isinstance(log_nonref, (int, float))
+                or not np.isfinite([log_ref, log_nonref]).all()
+                or max(log_ref, log_nonref) > 1e-5
+                or not np.isclose(np.logaddexp(log_ref, log_nonref), 0, atol=2e-5)
+            ):
+                raise ValueError("Invalid refusal/nonrefusal log-probability masses.")
+            if (
+                not isinstance(ids, list)
+                or len(ids) != 100
+                or any(type(i) is not int or i < 0 for i in ids)
+                or len(set(ids)) != 100
+                or not isinstance(probabilities, list)
+                or len(probabilities) != 100
+                or any(type(p) is not float for p in probabilities)
+                or not np.isfinite(probabilities).all()
+                or min(probabilities) < 0
+                or max(probabilities) > 1
+                or sum(probabilities) > 1.00002
+                or any(a < b for a, b in itertools.pairwise(probabilities))
+            ):
+                raise ValueError("Invalid top-100 next-token probabilities or IDs.")
+            refusal[index], nonrefusal[index] = log_ref, log_nonref
+            top_ids[index], top_probabilities[index] = ids, probabilities
         offset += shard["rows"]
     selected = manifest.get("selected_source_row_indices")
     if selected is not None and selected != indices.tolist():
@@ -227,4 +274,9 @@ def load_activation_run(s3: S3Client, run_uri: str) -> ActivationRun:
         prompts,
         harmful,
         activations,
+        adversarial,
+        refusal,
+        nonrefusal,
+        top_ids,
+        top_probabilities,
     )

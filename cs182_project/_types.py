@@ -28,12 +28,14 @@ class PromptRow(TypedDict):
     prompt: str
     prompt_harm_label: HarmLabel
     harmful: bool
+    adversarial: bool
 
 
 class PromptGroup(TypedDict):
     source_row_index: int
     prompt: str
     labels: set[HarmLabel]
+    adversarial_values: set[bool]
 
 
 class PreparedPrompt(PromptRow):
@@ -48,7 +50,14 @@ class TensorBatch(TypedDict):
     attention_mask: Tensor
 
 
-class ActivationRow(PreparedPrompt):
+class NextTokenStatistics(TypedDict):
+    top_token_ids: list[int]
+    top_token_probabilities: list[float]
+    refusal_log_probability: float
+    nonrefusal_log_probability: float
+
+
+class ActivationRow(PreparedPrompt, NextTokenStatistics):
     activations: list[list[float]]
 
 
@@ -60,6 +69,7 @@ class SnapshotSource(TypedDict):
 
 class DatasetSource(SnapshotSource):
     split: str
+    partition: JsonObject
 
 
 class _SampleSize(TypedDict):
@@ -82,6 +92,8 @@ class RunMetadata(_SampleSize, total=False):
     sampling: str
     selected_source_row_indices: list[int]
     class_counts: dict[HarmLabel, int]
+    group_counts: dict[str, int]
+    next_token: JsonObject
 
 
 class Shard(TypedDict):

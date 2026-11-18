@@ -37,9 +37,16 @@ precedence over the environment variable. It cannot be combined with an explicit
 `LastModified` timestamp across all listing pages. Orphan shards and incomplete
 runs are ignored. Unsupported or corrupt selected runs fail clearly.
 
-Five-fold evaluation requires at least five harmful and five harmless examples.
-Use `--folds 2` for runs with only two examples of each class. A run with fewer
-than two examples in either class cannot be evaluated with cross-validation.
+Analysis requires schema-version-2 activation runs containing `adversarial` and
+next-token probability data. Older runs must be recollected with a rebuilt
+runtime image. Publish membership using `partition_dataset.py` before collection;
+see [collection setup](README.md#collect-wildguardmix-activations).
+
+Five-fold evaluation requires at least five examples in **each** of the four
+harmful/harmless × adversarial/non-adversarial groups (at least 20 rows with the
+new balanced sampler). `--folds 2` requires at least two in each group. Sparse
+groups fail clearly. The default collector uses only the new training partition;
+validation is reserved, rather than used by this cross-validation analysis.
 
 Progress goes to stderr; the final stdout line is the HTML report's absolute
 path. Open that file in a browser. The command does not launch a browser or
@@ -50,31 +57,60 @@ succeed.
 
 ## Contents of the report
 
-The report shows harmful-class precision, recall, F1, and highlighted best F1
-layers for both classifiers. All exact ties are highlighted. It includes a
-metric-versus-layer chart and a selectable scatterplot for every layer, with
-harmful/harmless colors, original source-row indices, fold IDs, and short prompt
-excerpts on hover. Plotly.js is embedded once; viewing the file needs no internet
-connection. The HTML includes prompt excerpts and run provenance.
+The report contains completely separate adversarial and non-adversarial analyses:
 
-Layers are zero-based: layer 0 is the first decoder block, matching the stored
-activations. Every run produces:
+- Per-layer logistic and mean-difference classifier precision, recall, and F1.
+  Every layer tied for best F1 is highlighted.
+- Per-layer refusal Ridge regression R², RMSE, and MAE, highlighting best R².
+- Layer-selectable scatterplots colored by harmfulness and matching plots colored
+  continuously by refusal metric. Refusal color limits are shared across groups.
+- Refusal precision, recall, F1, and confusion counts as a harmful-input detector,
+  using the strict threshold `refusal_metric > -5`.
 
-- `report.html`: self-contained interactive report, transferable as one file.
-- `metrics.json`: full-precision metrics and confusion counts, all best F1
-  layers, source manifest and its SHA-256, settings, package versions, and
-  numerical notes.
-- `directions.npz`: numerical arrays usable with `numpy.load(...,
-  allow_pickle=False)`.
+A common-bin histogram compares the four input categories, marking the threshold.
+A heatmap compares six selected unit directions: logistic, mean difference, and
+refusal regression for each subgroup. Names include their source layers.
+Plotly.js is embedded once, so the report works offline. Hover text includes
+source indices, fold IDs, prompt excerpts, and refusal metrics.
 
-NPZ arrays `harmful_means`, `harmless_means`, `differences`, `directions`, and
-`orthogonal_pc1` have shape `[layers, hidden_size]`. `differences` is the raw
-harmful-minus-harmless mean difference; `directions` contains its normalized
-version. `coordinates` has shape `[layers, rows, 2]`. Arrays
-`logistic_predictions`, `midpoint_predictions`, and `midpoint_valid` have shape
-`[layers, rows]`; the latter marks where the midpoint classifier is defined.
-`harmful`, `source_row_indices`, and `fold_ids` have shape `[rows]`. These row
-indices preserve shard order and reference the original dataset split.
+Every run produces `report.html`, `metrics.json`, and `directions.npz`. JSON
+contains subgroup metrics, all tied best layers, selection/provenance settings,
+source manifest checksum, versions, and the direction inner-product matrix.
+
+Load NPZ using `numpy.load(path, allow_pickle=False)`. Top-level arrays include
+`source_row_indices`, `harmful`, `adversarial`, `selected_directions` `[6, hidden]`,
+`selected_names`, `selected_layers`, `selected_valid`, and `inner_products` `[6, 6]`.
+Unavailable directions have zero vectors, a false validity flag, and NaN matrix
+entries (JSON uses null). Missing winning layers use index -1.
+
+Subgroup arrays have prefixes `non_adversarial__` or `adversarial__`:
+
+- `harmful_means`, `harmless_means`, `differences`, `directions`, and
+  `orthogonal_pc1`: `[layers, hidden]`; `directions` is normalized mean difference.
+- `logistic_directions`, `refusal_directions`, their corresponding `*_coefficients`
+  `[layers, hidden]`, `*_intercepts` and `*_valid` `[layers]`. Coefficients and
+  intercepts use raw activation coordinates, undoing feature standardization.
+- `midpoint_direction_valid` `[layers]` marks defined full-subgroup mean directions.
+- `coordinates` `[layers, subgroup_rows, 2]`; `logistic_predictions`,
+  `midpoint_predictions`, `midpoint_valid`, and `refusal_predictions`
+  `[layers, subgroup_rows]`. Predictions are out of fold.
+- `source_row_indices`, `harmful`, `fold_ids`, and `refusal_metric` `[subgroup_rows]`.
+
+Original source indices reference the official input Parquet, before partitioning
+or filtering. Decoder layers are zero-based.
+
+## Refusal metric
+
+Following [the paper, Appendix B](https://arxiv.org/html/2406.11717v3), the metric
+is `log(P_refusal) - log(P_nonrefusal)`. For Qwen Chat the refusal set is token IDs
+`{40, 2121}` (`I`, `As`). Collection verifies this tokenizer mapping and computes
+both log masses with stable log-sum-exp over the full next-token vocabulary.
+Analysis subtracts the stored masses. It never estimates refusal from the top
+100 tokens or renormalizes those probabilities. This remains finite even when
+refusal tokens are outside the top 100 or their probabilities are extreme.
+
+The `-5` threshold is the requested detector threshold, independently of layer
+selection or classifier fitting; the histogram includes all four categories.
 
 ## Geometry and evaluation
 
@@ -86,11 +122,11 @@ The scatterplot's horizontal coordinate is $(x-m)^T\hat r$, where
 $\hat r=r/\|r\|$. The vertical axis is the first principal component of the
 centered activations projected onto the orthogonal complement of $r$. PCA uses
 full SVD. The component is reorthogonalized and normalized, with a deterministic
-sign convention. The vertical dashed line at zero is the descriptive full-run
+sign convention. The dashed line at zero is the descriptive full-run
 midpoint boundary.
 
-The plots use the full run. The metrics use a separate, shared, shuffled
-stratified K-fold partition for every layer and both classifiers. Each example
+The plots use the full subgroup. Within each subgroup, metrics use a shared,
+shuffled stratified K-fold partition for every layer and all three methods. Each example
 receives exactly one out-of-fold prediction. Precision, recall, and F1 are
 computed from the pooled predictions, not averaged fold scores. Harmful is
 positive; zero-denominator scores are zero.
@@ -100,6 +136,21 @@ positive; zero-denominator scores are zero.
   at most 1,000 iterations. Nonconvergence fails with the layer and fold number.
 - The midpoint classifier fits both means on training rows only and predicts
   harmful when $(x-m_{train})^T r_{train} \geq 0$. It does not scale features.
+
+- Refusal regression uses training-fold `StandardScaler` and Ridge with
+  `alpha=1`, solver `lsqr`, tolerance `1e-8`. R², RMSE, and MAE are computed on
+  pooled out-of-fold predictions. Constant targets have undefined R² and are
+  excluded from layer ranking.
+
+Select classifiers by highest F1 and refusal regression by highest R². All exact
+ties are highlighted; the earliest tied layer supplies each selected direction.
+Models are refitted on all subgroup rows to export coefficients. Logistic
+coefficients point toward harmful predictions; refusal coefficients point toward
+increasing refusal metric. The mean-difference direction points from harmless
+to harmful means. All directions are normalized **after** conversion to raw
+activation coordinates. A zero coefficient is marked unavailable. Inner products
+compare residual-stream coordinates, potentially from different source layers;
+they do not establish causal equivalence.
 
 The descriptive projections never enter the evaluated classifiers. If a training
 fold has identical class means, that layer's midpoint metrics are unavailable
@@ -151,7 +202,8 @@ analysis; activation vectors are not expanded into Python float lists.
 - `activation_runs.load_activation_run(s3, run_uri)` returns a typed
   `ActivationRun` with numeric arrays and provenance.
 - `activation_analysis.analyze_activations(run, folds=5, seed=0)` performs pure
-  CPU analysis, independent of AWS clients and output paths.
+  CPU analysis, returning `ActivationAnalyses` with separate subgroup results,
+  independent of AWS clients and output paths.
 - `activation_report.write_analysis_report(result, output_dir)` writes artifacts
   and returns the HTML path.
 

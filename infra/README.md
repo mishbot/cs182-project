@@ -334,6 +334,24 @@ tofu -chdir=infra/dev-server plan
 tofu -chdir=infra/dev-server apply
 ```
 
+Before collection, publish the train/validation membership once from your workstation,
+using operator credentials with write access to the datasets bucket:
+
+```bash
+DATASET_URI=s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA
+uv run --locked --extra seed python infra/scripts/partition_dataset.py \
+  --dataset-s3-uri "$DATASET_URI"
+```
+
+This stores only original row indices under `partitions/wildguardmix/` in the
+same bucket. It reserves approximately 20% of the official train split for
+validation, with seed 0, grouping identical prompts and stratifying by harmfulness
+and adversarial status. The archived Parquet files and manifest are unchanged.
+Repeated publication verifies the existing file. The command prints its URI.
+`--validation-fraction` and `--seed` select a different partition configuration;
+pass the returned URI as `--partition-s3-uri` when collecting a nondefault partition.
+Actual membership counts are recorded in the file.
+
 Commit these changes, rebuild/publish the image using its Git-based tag, and pull
 that tag on the server. Retain the existing inference entrypoint; override it for
 activation collection. On the dev server, use the same `MODEL_URI`, `REPOSITORY`,
@@ -353,13 +371,20 @@ docker run --rm --gpus all --entrypoint python \
   --sample-size 1000 --seed 0 --batch-size 4 --max-input-tokens 2048
 ```
 
-`--sample-size` is required and must be at least 2. `--split` defaults to `train`
-and also accepts `test`. Sampling excludes empty prompts and unknown labels,
-deduplicates exact prompt strings, and discards prompts with conflicting known
-labels. It samples harmful and unharmful prompts without replacement in equal
-numbers; an odd sample size gets one extra harmful example. `--seed` makes the
-selected source rows and their order reproducible for a fixed snapshot/split.
-Insufficient eligible examples cause an error rather than a smaller sample.
+`--sample-size` is required and must be at least 4. Use at least **20** for the
+default five-fold analysis. `--split train` now means the training membership
+of this partition, and fails clearly if the membership file has not been published.
+Explicit `--split validation` uses its validation membership; `--split test` uses
+the untouched official test split. The default is `train`.
+
+Sampling balances the four harmful/harmless × adversarial/non-adversarial groups,
+without replacement. Remainder rows go in order to non-adversarial harmful,
+non-adversarial harmless, adversarial harmful, then adversarial harmless. Exact
+prompts are deduplicated, and prompts with conflicting known harm labels or
+adversarial flags are excluded. Empty prompts, unknown labels, and nonboolean
+adversarial values are ineligible. Source indices always refer to the original
+Parquet file. `--seed` controls sampling independently of the partition seed.
+Insufficient eligible examples fail rather than reducing the sample size.
 
 The script applies Qwen's chat template, including the assistant generation prefix.
 It preflights every selected prompt and fails if the formatted token count exceeds
@@ -373,7 +398,12 @@ Each decoder block is hooked once per forward pass. Only the hidden-state vector
 at the final **non-padding token of the chat-formatted input** is kept, not the
 final token of the raw user text. Layer 0 is the first decoder block output and
 the final layer is captured **before** the model's final normalization. Embeddings,
-attention/MLP internals, generated responses, and vocabulary logits are excluded.
+attention/MLP internals and generated responses are excluded. The same forward pass
+also applies the LM head to the final normalized token state, saving the top 100
+next-token IDs and probabilities normalized over the full vocabulary. Stable
+refusal and nonrefusal log-probability masses are saved separately, including
+refusal tokens outside the top 100. Qwen Chat uses refusal IDs 40 (`I`) and 2121
+(`As`), following the paper; the tokenizer mapping is verified before inference.
 Right-padding and attention masks select the correct position for unequal lengths.
 
 Each invocation creates a unique run directory under the output prefix containing
@@ -391,6 +421,11 @@ Each Parquet row contains:
 | `prompt` | Original, unmodified dataset prompt |
 | `prompt_harm_label` | Original `harmful` or `unharmful` label |
 | `harmful` | Boolean version of the label |
+| `adversarial` | Original WildGuardMix boolean flag |
+| `top_token_ids` | 100 token IDs sorted by decreasing next-token probability |
+| `top_token_probabilities` | Corresponding probabilities, normalized over the entire vocabulary |
+| `refusal_log_probability` | Log probability mass of the refusal token set |
+| `nonrefusal_log_probability` | Log probability mass of its complement |
 | `formatted_input_token_count` | Chat-formatted token count, excluding padding |
 | `activations` | Fixed-size nested float32 array `[num_layers, hidden_size]` |
 
@@ -401,9 +436,11 @@ metadata. Memory for output is bounded by one shard plus the current batch;
 model weights, selected tokenized inputs, and the input dataset also occupy memory.
 
 The completion manifest records source model/dataset manifests and their checksums,
-selected row indices, split, seed, class counts, batch/token limits, device/compute
+selected row indices, split and partition URI/checksum, seed, class/group counts,
+next-token semantics and refusal token IDs, batch/token limits, device/compute
 dtype, tensor semantics/dimensions, and shard counts/sizes/checksums. Read **only
-runs with a completion manifest**. A failure can leave orphan shards, reports its
+runs with a completion manifest**. New runs use schema version 2; older runs
+need recollection for refusal analysis. A failure can leave orphan shards, reports its
 run directory, and publishes no success marker. There is no automatic resume;
 retrying creates a new run. Clean up incomplete runs with your workstation's
 operator credentials if needed.

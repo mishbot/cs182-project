@@ -623,6 +623,7 @@ runtime = [
 seed = [
     { name = "boto3" },
     { name = "huggingface-hub" },
+    { name = "pyarrow" },
 ]
 
 [package.dev-dependencies]
@@ -645,6 +646,7 @@ requires-dist = [
     { name = "plotly", marker = "extra == 'analysis'", specifier = ">=6,<8" },
     { name = "pyarrow", marker = "extra == 'analysis'", specifier = "==19.0.1" },
     { name = "pyarrow", marker = "extra == 'runtime'", specifier = "==19.0.1" },
+    { name = "pyarrow", marker = "extra == 'seed'", specifier = "==19.0.1" },
     { name = "safetensors", marker = "extra == 'runtime'", specifier = "==0.5.3" },
     { name = "scikit-learn", marker = "extra == 'analysis'", specifier = ">=1.5,<2" },
     { name = "torch", marker = "platform_machine == 'x86_64' and sys_platform == 'linux' and extra == 'runtime'", specifier = "==2.6.0", index = "https://download.pytorch.org/whl/cu124" },
