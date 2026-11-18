@@ -24,6 +24,7 @@ variable "project" { type = string }
 variable "model_bucket" { type = string }
 variable "dataset_bucket" { type = string }
 variable "activation_bucket" { type = string }
+variable "analysis_bucket" { type = string }
 variable "ecr_repository" { type = string }
 variable "data_volume_id" { type = string }
 variable "ssh_public_key" {
@@ -65,6 +66,7 @@ data "aws_ebs_volume" "data" {
 data "aws_s3_bucket" "models" { bucket = var.model_bucket }
 data "aws_s3_bucket" "datasets" { bucket = var.dataset_bucket }
 data "aws_s3_bucket" "activations" { bucket = var.activation_bucket }
+data "aws_s3_bucket" "analyses" { bucket = var.analysis_bucket }
 data "aws_ecr_repository" "runtime" { name = var.ecr_repository }
 
 resource "aws_vpc" "main" {
@@ -224,4 +226,18 @@ output "ssh_command" { value = "ssh ubuntu@${aws_instance.dev.public_ip}" }
 output "ami_id" {
   value     = aws_instance.dev.ami
   sensitive = true
+}
+
+# Derived from analysis_jobs.py with IAM Policy Autopilot; restrict uploads to result runs.
+# Managed file transfers additionally need permission to abort failed multipart uploads.
+resource "aws_iam_role_policy" "analysis_write" {
+  role = aws_iam_role.dev.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:PutObject", "s3:AbortMultipartUpload"]
+      Resource = "${data.aws_s3_bucket.analyses.arn}/runs/*"
+    }]
+  })
 }

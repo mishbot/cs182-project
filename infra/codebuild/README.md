@@ -61,6 +61,32 @@ uv run --locked --extra modal python -m infra.modal.prepare_image
 Subsequent Modal tasks reference the prepared named image without importing it
 again. EC2 users can pull the printed ECR image URI directly.
 
+## GPU analysis environment
+
+The shared ECR image now uses `nvidia/cuda:12.9.1-devel-ubuntu22.04` and uv-managed
+Python 3.11.12. Inference keeps `/app/.venv`; cuML analysis uses the separately
+locked `/app/.analysis-venv`, defined by `infra/analysis-runtime`. Both environments
+install the same `cs182_project` library. Root `uv sync --all-extras` does not
+install cuML on workstations.
+
+The development toolkit supplies NVRTC required by RAPIDS. GPU hosts must support
+the image's CUDA requirement; an older EC2 driver may need upgrading before using
+this image. The larger CUDA/cuML layers are cached and exported using the same
+eStargz workflow. CodeBuild checks dependency consistency in the GPU environment
+without importing GPU-dependent cuML on its CPU-only worker. The offline suite
+continues to exercise real tiny models and scientific fixtures on CPU.
+
+After publication/preparation, validate an actual GPU run using:
+
+```bash
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
+  --run-s3-uri s3://ACTIVATION_BUCKET/runs/RUN_ID/manifest.json
+```
+
+Confirm logs show GPU dispatch for logistic regression, Ridge, and PCA, then inspect
+the analyses bucket's completed artifacts and phase timings. GPU numerical results
+need not be identical to CPU fits; evaluate metrics and direction invariants.
+
 ## Build and cache behavior
 
 The project uses an on-demand privileged amd64 container with managed internet
@@ -130,7 +156,7 @@ The invoking identity needs:
 
 The build service role can authenticate to ECR, pull/push only the runtime and
 cache repositories, and write only its build log group. It has no permissions
-for model, dataset, or activation buckets. CodeBuild uses its service role;
+for model, dataset, activation, or analyses buckets. CodeBuild uses its service role;
 workstation credentials and GitHub tokens are not passed to builds. The trust
 policy restricts assumption to this account's specific CodeBuild project.
 

@@ -58,10 +58,15 @@ See [infra/README.md](infra/README.md) for the Qwen GPU development environment.
 Runtime images are built and tested in [AWS CodeBuild](infra/codebuild/README.md)
 from a clean, pushed GitHub commit; local Docker is not required for publishing.
 
+For GPU analysis, run `uv run --locked --extra modal modal run infra/modal/analyze_activations.py`
+after rebuilding and preparing the ECR image. Results are exported to the analyses
+S3 bucket. Only non-adversarial samples are analyzed by default; add
+`--include-adversarial` for both groups. Refusal uses the strict threshold `> 0`.
+
 For CPU analysis of saved activations, install `--extra analysis` and run
 `uv run --extra analysis python infra/scripts/analyze_activations.py`.
 See [activation analysis](infra/analysis.md) for cross-validation, Plotly reports,
-numerical outputs, and EC2 use. Reports analyze adversarial and non-adversarial
+numerical outputs, and EC2 use. Reports analyze enabled adversarial and non-adversarial
 samples separately and include refusal metrics and direction comparisons.
 Before collection, publish the default 80/20 WildGuardMix row partition with
 `uv run --locked --extra seed python infra/scripts/partition_dataset.py --dataset-s3-uri "$DATASET_URI"`.

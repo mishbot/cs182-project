@@ -199,7 +199,7 @@ class ActivationMathTest(unittest.TestCase):
 
         with patch.object(StandardScaler, "fit", new=record_fit), \
                 patch.object(analysis, "midpoint_predict", wraps=analysis.midpoint_predict) as midpoint:
-            result = analysis.analyze_activations(run, folds=5, seed=7)
+            result = analysis.analyze_activations(run, folds=5, seed=7, include_adversarial=True)
         self.assertEqual(len(fits), 36)
         for group_index, group in enumerate(result.groups):
             subset = run.activations[run.adversarial == bool(group_index)]
@@ -225,10 +225,10 @@ class ActivationMathTest(unittest.TestCase):
         from sklearn.exceptions import ConvergenceWarning
         with patch("sklearn.linear_model.LogisticRegression.fit", side_effect=ConvergenceWarning("not converged")):
             with self.assertRaisesRegex(ValueError, "layer 0, fold 0"):
-                analysis.analyze_activations(run)
+                analysis.analyze_activations(run, include_adversarial=True)
 
     def test_report_is_offline_and_exports_directions_predictions_and_provenance(self):
-        result = analysis.analyze_activations(fixture_run())
+        result = analysis.analyze_activations(fixture_run(), include_adversarial=True)
         with tempfile.TemporaryDirectory() as directory:
             path = report.write_analysis_report(result, directory)
             text = path.read_text()
@@ -259,11 +259,11 @@ class ActivationMathTest(unittest.TestCase):
 @unittest.skipUnless(AVAILABLE, "Install the analysis extra")
 class RefusalAnalysisTest(unittest.TestCase):
     def test_refusal_metric_and_strict_threshold_have_known_confusion_counts(self):
-        values = np.array([-10., -5., -4., 0.])
+        values = np.array([-10., 0., 1., 5.])
         log_refusal = -np.logaddexp(0, -values)
         log_nonrefusal = -np.logaddexp(0, values)
         np.testing.assert_allclose(analysis.refusal_metric(log_refusal, log_nonrefusal), values)
-        metrics = analysis.classification_metrics(np.array([False, True, False, True]), values > -5)
+        metrics = analysis.classification_metrics(np.array([False, True, False, True]), values > 0)
         self.assertEqual((metrics.tp, metrics.fp, metrics.tn, metrics.fn), (1, 1, 1, 1))
         self.assertEqual((metrics.precision, metrics.recall, metrics.f1), (.5, .5, .5))
         with self.assertRaisesRegex(ValueError, "normalized"):
@@ -273,7 +273,7 @@ class RefusalAnalysisTest(unittest.TestCase):
         from sklearn.linear_model import LogisticRegression, Ridge
         run = fixture_run()
         run = replace(run, activations=run.activations * np.array([3., 100., 1.], dtype=np.float32))
-        result = analysis.analyze_activations(run)
+        result = analysis.analyze_activations(run, include_adversarial=True)
         selected = analysis.selected_directions(result)
         self.assertEqual(len(selected), 6)
         for group in result.groups:
@@ -300,24 +300,45 @@ class RefusalAnalysisTest(unittest.TestCase):
                 self.assertEqual(directions.shape, (6, 3))
                 self.assertEqual(arrays['selected_layers'].tolist(), [0]*6)
             summary = json.loads((Path(directory)/'metrics.json').read_text())
-            figure = report._histogram(result)
-            self.assertEqual(len(figure.data), 4)
+            figure = report._histogram(result, result.groups[0])
+            self.assertEqual(len(figure.data), 2)
             self.assertEqual(len({trace.xbins.size for trace in figure.data}), 1)
-            self.assertEqual(summary['groups']['adversarial']['refusal_detector']['threshold'], -5)
+            self.assertEqual(summary['groups']['adversarial']['refusal_detector']['threshold'], 0)
+            other = report._histogram(result, result.groups[1])
+            self.assertEqual(figure.data[0].xbins.to_plotly_json(), other.data[0].xbins.to_plotly_json())
+            self.assertEqual(float(figure.layout.shapes[0].x0), 0)
+
+    def test_default_skips_adversarial_fits_and_has_three_directions(self):
+        run = fixture_run()
+        # A one-class adversarial subset must not block non-adversarial evaluation.
+        harmful = run.harmful.copy()
+        harmful[run.adversarial] = True
+        result = analysis.analyze_activations(replace(run, harmful=harmful))
+        self.assertEqual([group.group for group in result.groups], ['non_adversarial'])
+        self.assertEqual(len(analysis.selected_directions(result)), 3)
+        summary = report.analysis_summary(result)
+        self.assertFalse(summary['include_adversarial'])
+        self.assertEqual(np.shape(summary['inner_products']), (3, 3))
+        with tempfile.TemporaryDirectory() as directory:
+            text = report.write_analysis_report(result, directory).read_text()
+            self.assertIn('id="non_adversarial-refusal-histogram"', text)
+            self.assertNotIn('id="adversarial-refusal-histogram"', text)
+        with self.assertRaisesRegex(ValueError, 'adversarial:.*class count'):
+            analysis.analyze_activations(replace(run, harmful=harmful), include_adversarial=True)
 
     def test_subgroups_are_independent_and_constant_targets_are_flagged(self):
         run = fixture_run()
-        original = analysis.analyze_activations(run)
+        original = analysis.analyze_activations(run, include_adversarial=True)
         features = run.activations.copy()
         features[run.adversarial] += 100
-        changed = analysis.analyze_activations(replace(run, activations=features))
+        changed = analysis.analyze_activations(replace(run, activations=features), include_adversarial=True)
         for old, new in zip(original.groups[0].layers, changed.groups[0].layers):
             np.testing.assert_array_equal(old.logistic_fit.coefficient, new.logistic_fit.coefficient)
             np.testing.assert_array_equal(old.refusal_fit.coefficient, new.refusal_fit.coefficient)
             np.testing.assert_array_equal(old.refusal_predictions, new.refusal_predictions)
         targets = np.full(40, -5.)
         constant = analysis.analyze_activations(replace(run, refusal_log_probability=-np.logaddexp(0, -targets),
-                                                       nonrefusal_log_probability=-np.logaddexp(0, targets)))
+                                                       nonrefusal_log_probability=-np.logaddexp(0, targets)), include_adversarial=True)
         self.assertEqual(analysis.best_regression_layers(constant.groups[0]), [])
         self.assertFalse(analysis.selected_directions(constant)[2].valid)
         self.assertIsNone(constant.groups[0].layers[0].refusal_regression.r2)

@@ -91,7 +91,7 @@ class ActivationAnalysis:
 @dataclass(frozen=True)
 class ActivationAnalyses:
     run: ActivationRun
-    groups: tuple[ActivationAnalysis, ActivationAnalysis]
+    groups: tuple[ActivationAnalysis, ...]
 
 
 @dataclass(frozen=True)
@@ -378,7 +378,9 @@ def best_layers(analysis: ActivationAnalysis, classifier: Classifier) -> list[in
     return [layer for layer, score in available if score == maximum]
 
 
-def analyze_activations(run: ActivationRun, *, folds: int = 5, seed: int = 0) -> ActivationAnalyses:
+def analyze_activations(
+    run: ActivationRun, *, folds: int = 5, seed: int = 0, include_adversarial: bool = False
+) -> ActivationAnalyses:
     """Evaluate adversarial and non-adversarial rows independently; reserve validation data."""
     from dataclasses import replace
 
@@ -398,6 +400,8 @@ def analyze_activations(run: ActivationRun, *, folds: int = 5, seed: int = 0) ->
         raise ValueError("Expected a boolean adversarial column matching the run rows.")
     groups: list[ActivationAnalysis] = []
     for flag, name in [(False, "non_adversarial"), (True, "adversarial")]:
+        if flag and not include_adversarial:
+            continue
         selected = np.flatnonzero(run.adversarial == flag)
         subset = replace(
             run,
@@ -415,7 +419,7 @@ def analyze_activations(run: ActivationRun, *, folds: int = 5, seed: int = 0) ->
             groups.append(_analyze_group(subset, name, folds=folds, seed=seed))
         except ValueError as error:
             raise ValueError(f"{name}: {error}") from error
-    return ActivationAnalyses(run, (groups[0], groups[1]))
+    return ActivationAnalyses(run, tuple(groups))
 
 
 def best_regression_layers(analysis: ActivationAnalysis) -> list[int]:

@@ -6,7 +6,7 @@ if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
 fi
 
 _cs182_modal_env() {
-  local root discovered image model dataset output extra
+  local root discovered image model dataset output analysis extra
   if [[ ${1-} == --help || ${1-} == -h ]]; then
     echo 'Use: source infra/modal/env.sh [--project PROJECT] [--region REGION]'
     echo 'Defaults: CS182_PROJECT or cs182-cddr; region and credentials from your AWS session.'
@@ -23,15 +23,15 @@ _cs182_modal_env() {
     echo 'Modal discovery returned unexpected multiline output; environment unchanged.' >&2
     return 1
   fi
-  IFS=$'\t' read -r image model dataset output extra <<< "$discovered" || return 1
-  if [[ -z $image || -z $model || -z $dataset || -z $output || -n $extra ]]; then
+  IFS=$'\t' read -r image model dataset output analysis extra <<< "$discovered" || return 1
+  if [[ -z $image || -z $model || -z $dataset || -z $output || -z $analysis || -n $extra ]]; then
     echo 'Modal discovery returned incomplete configuration; environment unchanged.' >&2
     return 1
   fi
   # Assign literal values, without evaluating AWS-provided text as shell code.
-  export CS182_MODAL_IMAGE="$image" MODEL_URI="$model" DATASET_URI="$dataset" OUTPUT_URI="$output"
-  printf 'CS182_MODAL_IMAGE=%s\nMODEL_URI=%s\nDATASET_URI=%s\nOUTPUT_URI=%s\n' \
-    "$CS182_MODAL_IMAGE" "$MODEL_URI" "$DATASET_URI" "$OUTPUT_URI"
+  export CS182_MODAL_IMAGE="$image" MODEL_URI="$model" DATASET_URI="$dataset" OUTPUT_URI="$output" ANALYSIS_URI="$analysis"
+  printf 'CS182_MODAL_IMAGE=%s\nMODEL_URI=%s\nDATASET_URI=%s\nOUTPUT_URI=%s\nANALYSIS_URI=%s\n' \
+    "$CS182_MODAL_IMAGE" "$MODEL_URI" "$DATASET_URI" "$OUTPUT_URI" "$ANALYSIS_URI"
 }
 
 if _cs182_modal_env "$@"; then

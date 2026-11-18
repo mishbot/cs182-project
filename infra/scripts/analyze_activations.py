@@ -7,9 +7,7 @@ import os
 from pathlib import Path
 import sys
 
-from cs182_project.activation_analysis import analyze_activations
-from cs182_project.activation_report import write_analysis_report
-from cs182_project.activation_runs import activation_root, latest_activation_run, load_activation_run
+from cs182_project.analysis_jobs import run_analysis
 from cs182_project.model_artifacts import parse_s3_uri
 
 
@@ -22,11 +20,14 @@ def main():
     parser.add_argument("--region")
     parser.add_argument("--folds", type=int, default=5)
     parser.add_argument("--seed", type=int, default=0)
-    parser.add_argument("--output-dir", type=Path)
+    parser.add_argument("--output-dir", type=Path, help="Retain local artifacts in addition to the S3 export")
+    parser.add_argument("--output-s3-uri", help="Results prefix; defaults to ANALYSIS_URI or the project's analyses bucket")
+    parser.add_argument("--include-adversarial", action="store_true")
+    parser.add_argument("--backend", choices=["cpu", "cuml"], default="cpu")
     args = parser.parse_args()
     if args.folds < 2 or args.seed < 0:
         parser.error("--folds must be at least 2; --seed must be nonnegative")
-    for uri in [args.run_s3_uri, args.activation_root_s3_uri]:
+    for uri in [args.run_s3_uri, args.activation_root_s3_uri, args.output_s3_uri]:
         if uri:
             try:
                 parse_s3_uri(uri)
@@ -36,18 +37,7 @@ def main():
     try:
         import boto3
 
-        session = boto3.Session(region_name=args.region)
-        region = args.region or session.region_name or os.environ.get("AWS_REGION") or "us-east-1"
-        s3 = session.client("s3", region_name=region)
-        run_uri = args.run_s3_uri
-        if not run_uri:
-            root = args.activation_root_s3_uri or os.environ.get("OUTPUT_URI")
-            root = root or activation_root(session, project=args.project, region=region)
-            run_uri = latest_activation_run(s3, root)
-        run = load_activation_run(s3, run_uri)
-        analysis = analyze_activations(run, folds=args.folds, seed=args.seed)
-        output = args.output_dir or Path("reports/activations") / run.manifest["run_id"]
-        print(write_analysis_report(analysis, output))
+        print(run_analysis(boto3.Session(region_name=args.region), **vars(args)))
     except Exception as error:
         print(f"Activation analysis failed: {error}", file=sys.stderr)
         return 1

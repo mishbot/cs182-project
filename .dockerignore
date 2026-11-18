@@ -9,3 +9,6 @@
 !infra/container/Dockerfile
 !infra/scripts/
 !infra/scripts/*.py
+!infra/analysis-runtime/
+!infra/analysis-runtime/pyproject.toml
+!infra/analysis-runtime/uv.lock

@@ -63,6 +63,10 @@ variables {
 
 run "persistent_resources" {
   command = plan
+  assert {
+    condition     = aws_s3_bucket.storage["analyses"].bucket == "cs182-cddr-123456789012-us-east-1-analyses" && output.analysis_bucket == aws_s3_bucket.storage["analyses"].id && !aws_s3_bucket.storage["analyses"].force_destroy
+    error_message = "Add the dedicated analyses bucket without permitting forced destruction."
+  }
 
   assert {
     condition     = contains(keys(aws_s3_bucket.storage), "datasets") && aws_s3_bucket_versioning.datasets.versioning_configuration[0].status == "Enabled"
@@ -78,14 +82,14 @@ run "persistent_resources" {
   }
   assert {
     condition     = alltrue([for block in aws_s3_bucket_public_access_block.storage : block.block_public_acls && block.block_public_policy && block.ignore_public_acls && block.restrict_public_buckets])
-    error_message = "All three buckets must block all public access."
+    error_message = "All storage buckets must block all public access."
   }
   assert {
     condition     = aws_ecr_repository.runtime.image_tag_mutability == "IMMUTABLE"
     error_message = "Published image tags must be immutable."
   }
   assert {
-    condition     = alltrue([for name in ["activation_bucket", "dataset_bucket"] : contains(keys(output.dev_server_inputs), name)])
+    condition     = alltrue([for name in ["activation_bucket", "dataset_bucket", "analysis_bucket"] : contains(keys(output.dev_server_inputs), name)])
     error_message = "Export the activation and dataset buckets to the dev server."
   }
 
