@@ -234,3 +234,6 @@ qwen_obfuscated_lora/
 *.tfvars.json
 *.tfplan
 crash.log
+
+# Generated activation-analysis reports and numerical results.
+/reports/activations/

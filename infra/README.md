@@ -244,8 +244,9 @@ otherwise a newer public AMI can cause instance replacement on a later apply.
 The dev stack creates its own public subnet and internet gateway without a NAT
 gateway. Only SSH is allowed inbound. The instance role can read the model and datasets buckets
 and pull this ECR repository. It can upload objects and abort multipart uploads
-only in the activation bucket; it cannot modify model/dataset snapshots, read
-activations, or delete activation objects.
+only in the activation bucket. It can list and read activation runs under
+`runs/` for analysis; it cannot modify model/dataset snapshots or delete
+activation objects.
 IMDSv2 is required, with a hop limit of 2 so bridge-network containers can use
 the instance role. Anyone with Docker access effectively has root access and can
 use that role.
@@ -430,9 +431,10 @@ for shard in manifest["shards"]:
 assert total == manifest["row_count"] == manifest["sample_size"]
 ```
 
-The dev-server role intentionally has upload-only access to results. For analysis,
-use your operator profile or grant a separate reader role permission to the result
-objects. S3 storage and request charges apply to the input snapshot and results;
+The dev-server role can read the activation bucket's `runs/` prefix after applying
+the updated dev-server stack. For a self-contained Plotly report with per-layer
+directions, cross-validated classifiers, and best-layer highlighting, see
+[activation analysis](analysis.md). S3 storage and request charges apply to the input snapshot and results;
 GPU time and activation output volume are likely to dominate repeated experiments.
 
 ## Stop, replace, and tear down

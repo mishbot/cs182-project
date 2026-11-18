@@ -152,18 +152,19 @@ import sys
 
 class NoOptionalDependencies(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path=None, target=None):
-        if fullname.split(".")[0] in {"torch", "transformers", "pyarrow", "boto3", "botocore", "huggingface_hub"}:
+        if fullname.split(".")[0] in {"torch", "transformers", "pyarrow", "boto3", "botocore", "huggingface_hub", "numpy", "sklearn", "plotly"}:
             raise ImportError("optional dependency imported: " + fullname)
 
 sys.meta_path.insert(0, NoOptionalDependencies())
 from cs182_project import activations, dataset_artifacts, inference, model_artifacts, seeding
+from cs182_project import activation_runs, activation_analysis, activation_report
 if len(sys.argv) > 1:
     script = sys.argv[1]
     sys.argv = sys.argv[1:]
     runpy.run_path(script, run_name="__main__")
 '''
         with tempfile.TemporaryDirectory() as directory:
-            for script in [None, "infer.py", "seed_model.py", "seed_dataset.py", "collect_activations.py"]:
+            for script in [None, "infer.py", "seed_model.py", "seed_dataset.py", "collect_activations.py", "analyze_activations.py"]:
                 with self.subTest(script=script):
                     command = [sys.executable, "-I", "-c", code]
                     if script:

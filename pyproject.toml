@@ -18,6 +18,13 @@ dev = [
 ]
 
 [project.optional-dependencies]
+analysis = [
+    "boto3==1.38.23",
+    "numpy>=1.26",
+    "pyarrow==19.0.1",
+    "scikit-learn>=1.5,<2",
+    "plotly>=6,<8",
+]
 build = [
     "boto3==1.38.23",
 ]
