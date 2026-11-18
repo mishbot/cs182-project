@@ -150,6 +150,26 @@ resource "aws_iam_role_policy" "activation_write" {
   })
 }
 
+resource "aws_iam_role_policy" "activation_read" {
+  role = aws_iam_role.dev.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect    = "Allow"
+        Action    = ["s3:ListBucket"]
+        Resource  = data.aws_s3_bucket.activations.arn
+        Condition = { StringLike = { "s3:prefix" = ["runs", "runs/*"] } }
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:GetObject"]
+        Resource = "${data.aws_s3_bucket.activations.arn}/runs/*"
+      }
+    ]
+  })
+}
+
 resource "aws_instance" "dev" {
   ami                         = var.ami_id != null ? var.ami_id : data.aws_ssm_parameter.dlami[0].value
   instance_type               = var.instance_type
@@ -171,7 +191,7 @@ resource "aws_instance" "dev" {
     http_put_response_hop_limit = 2 # Allow Docker bridge containers to use instance-role credentials.
   }
   tags       = { Name = "${var.project}-dev" }
-  depends_on = [aws_route_table_association.public, aws_iam_role_policy.read, aws_iam_role_policy.activation_write]
+  depends_on = [aws_route_table_association.public, aws_iam_role_policy.read, aws_iam_role_policy.activation_write, aws_iam_role_policy.activation_read]
   lifecycle {
     precondition {
       condition     = data.aws_ebs_volume.data.availability_zone == var.availability_zone

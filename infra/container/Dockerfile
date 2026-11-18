@@ -10,9 +10,9 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY pyproject.toml uv.lock /app/
 # Cache dependencies separately from project code. CUDA wheels also run on CPU.
-RUN uv sync --locked --extra runtime --no-dev --no-install-project
+RUN uv sync --locked --extra runtime --extra analysis --no-dev --no-install-project
 COPY README.md /app/
 COPY cs182_project /app/cs182_project
-RUN uv sync --locked --extra runtime --no-dev --no-editable
+RUN uv sync --locked --extra runtime --extra analysis --no-dev --no-editable
 COPY infra/scripts/*.py /app/
 ENTRYPOINT ["python", "/app/infer.py"]

@@ -55,7 +55,7 @@ docker buildx build "${build_args[@]}" --load \
 # Require the real ML dependencies; a missing dependency must not silently skip
 # the tiny local model tests. No model download or AWS calls are needed.
 docker run --rm --network none --entrypoint python "$image" \
-  -c 'import torch, transformers, pyarrow, cs182_project'
+  -c 'import torch, transformers, pyarrow, sklearn, plotly, cs182_project'
 docker run --rm --network none --entrypoint python \
   -v "$PWD/infra:/test-source/infra:ro" "$image" \
   -m unittest discover -s /test-source/infra/tests -v

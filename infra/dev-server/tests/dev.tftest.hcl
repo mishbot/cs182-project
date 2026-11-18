@@ -62,6 +62,14 @@ run "dev_resources" {
     condition     = jsondecode(aws_iam_role_policy.activation_write.policy).Statement[0].Resource == "arn:aws:s3:::fixture-activations/*" && toset(jsondecode(aws_iam_role_policy.activation_write.policy).Statement[0].Action) == toset(["s3:PutObject", "s3:AbortMultipartUpload"])
     error_message = "Activation uploads must be scoped to the activation bucket, with multipart abort permission."
   }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.activation_read.policy).Statement[0].Resource == "arn:aws:s3:::fixture-activations" && toset(jsondecode(aws_iam_role_policy.activation_read.policy).Statement[0].Action) == toset(["s3:ListBucket"]) && toset(jsondecode(aws_iam_role_policy.activation_read.policy).Statement[0].Condition.StringLike["s3:prefix"]) == toset(["runs", "runs/*"])
+    error_message = "Activation discovery must be limited to the runs prefix."
+  }
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.activation_read.policy).Statement[1].Resource == "arn:aws:s3:::fixture-activations/runs/*" && toset(jsondecode(aws_iam_role_policy.activation_read.policy).Statement[1].Action) == toset(["s3:GetObject"]) && length(jsondecode(aws_iam_role_policy.activation_read.policy).Statement) == 2
+    error_message = "Analysis reads must be limited to activation run objects."
+  }
 }
 
 run "reject_wrong_az" {

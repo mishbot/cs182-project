@@ -229,3 +229,6 @@ __marimo__/
 *.tfvars.json
 *.tfplan
 crash.log
+
+# Generated activation-analysis reports and numerical results.
+/reports/activations/
