@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Literal, cast
 
+from ._model_config import load_local_model_config
 from ._types import (
     ActivationRow,
     Device,
@@ -305,7 +306,6 @@ def collect(
         parse_s3_uri(uri)
     import pyarrow.parquet as pq
     import torch
-    from transformers.models.auto.configuration_auto import AutoConfig
     from transformers.models.auto.modeling_auto import AutoModelForCausalLM
     from transformers.models.auto.tokenization_auto import AutoTokenizer
 
@@ -321,7 +321,7 @@ def collect(
     rows = pq.read_table(dataset_path, columns=["prompt", "prompt_harm_label"]).to_pylist()
     selected = sample_prompts(rows, sample_size, seed)
     model_dir = download_model(s3, model_s3_uri, cache / "models")
-    config = AutoConfig.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)
+    config = load_local_model_config(model_dir)
     if config.model_type != "qwen2":
         raise ValueError(
             "Activation extraction currently supports the Qwen2 architecture used by Qwen1.5."
@@ -333,6 +333,7 @@ def collect(
     model = (
         AutoModelForCausalLM.from_pretrained(
             model_dir,
+            config=config,
             local_files_only=True,
             trust_remote_code=False,
             use_safetensors=True,

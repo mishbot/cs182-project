@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from ._model_config import load_local_model_config
 from ._types import Device, PathInput
 
 
@@ -22,12 +23,14 @@ def generate(model_dir: PathInput, prompt: str, max_new_tokens: int, device: Dev
         raise ValueError(
             "CUDA requested but unavailable; run Docker with --gpus all or select --device cpu."
         )
+    config = load_local_model_config(model_dir)
     tokenizer = AutoTokenizer.from_pretrained(
         model_dir, local_files_only=True, trust_remote_code=False
     )
     model = (
         AutoModelForCausalLM.from_pretrained(
             model_dir,
+            config=config,
             local_files_only=True,
             trust_remote_code=False,
             use_safetensors=True,

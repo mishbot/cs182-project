@@ -206,13 +206,15 @@ class GenerationTest(unittest.TestCase):
         self.inputs.__getitem__.return_value.shape = [1, 3]
         self.tokenizer.return_value = self.inputs
         self.transformers = types.SimpleNamespace(
-            AutoTokenizer=MagicMock(), AutoModelForCausalLM=MagicMock(),
+            AutoConfig=MagicMock(), AutoTokenizer=MagicMock(), AutoModelForCausalLM=MagicMock(),
         )
+        self.transformers.AutoConfig.from_pretrained.return_value = self.model.config
         self.transformers.AutoTokenizer.from_pretrained.return_value = self.tokenizer
         self.transformers.AutoModelForCausalLM.from_pretrained.return_value = self.model
         self.modules = patch.dict(sys.modules, {
             "torch": self.torch,
             "transformers": self.transformers,
+            "transformers.models.auto.configuration_auto": self.transformers,
             "transformers.models.auto.modeling_auto": self.transformers,
             "transformers.models.auto.tokenization_auto": self.transformers,
         })
