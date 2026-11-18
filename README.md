@@ -8,7 +8,12 @@ from a clean, pushed GitHub commit; local Docker is not required for publishing.
 For CPU analysis of saved activations, install `--extra analysis` and run
 `uv run --extra analysis python infra/scripts/analyze_activations.py`.
 See [activation analysis](infra/analysis.md) for cross-validation, Plotly reports,
-numerical outputs, and EC2 use.
+numerical outputs, and EC2 use. Reports analyze adversarial and non-adversarial
+samples separately and include refusal metrics and direction comparisons.
+Before collection, publish the default 80/20 WildGuardMix row partition with
+`uv run --locked --extra seed python infra/scripts/partition_dataset.py --dataset-s3-uri "$DATASET_URI"`.
+Collection defaults to the training partition; existing activation runs need
+recollection to include next-token probabilities.
 
 Python core functionality lives in the installable `cs182_project` package.
 Use `uv sync --locked` for the library, `--extra seed` for archival, or
