@@ -300,6 +300,8 @@ class ExtractionTest(unittest.TestCase):
         s3 = MemoryS3()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
+            self.model.config.use_sliding_window = False
+            self.model.config.sliding_window = 128
             self.model.save_pretrained(root / "source")
             self.tokenizer.save_pretrained(root / "source")
             files = {p.name: p.read_bytes() for p in (root / "source").iterdir() if p.is_file()}
@@ -316,7 +318,9 @@ class ExtractionTest(unittest.TestCase):
                 dataset_s3_uri="s3://datasets/dataset", output_s3_uri="s3://activations/runs",
                 split="train", sample_size=5, seed=0, batch_size=2, max_input_tokens=64,
             )
-            uri = collect.collect(s3, **vars(args))
+            with patch("transformers.models.qwen2.modeling_qwen2.logger.warning_once") as warning:
+                uri = collect.collect(s3, **vars(args))
+            warning.assert_not_called()
             manifest = json.loads(s3.objects[("activations", uri.split("activations/", 1)[1])])
             self.assertEqual(manifest["class_counts"], {"harmful": 3, "unharmful": 2})
             self.assertEqual(manifest["num_layers"], 2)

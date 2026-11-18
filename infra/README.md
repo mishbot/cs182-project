@@ -312,6 +312,14 @@ CPU and FP32. To check CPU fallback, omit `--gpus all` and pass `--device cpu`.
 `--device cuda` explicitly fails if the GPU is unavailable. `--cache-dir` changes
 the local cache path. Use `--help` for either Python CLI without loading the model.
 
+The pinned checkpoint disables sliding-window attention but retains a window
+length in its config. Transformers 4.51.3 incorrectly warns based on that unused
+length. Both inference and activation collection clear it in memory before
+model construction when `use_sliding_window=false`; explicitly enabled windows
+are preserved. Snapshot files and checksums are unchanged. SDPA remains the
+default supported backend on CPU and T4; the separate FlashAttention-2 package
+is unnecessary for this fix.
+
 ## Collect WildGuardMix activations
 
 For an existing deployment, apply the persistent stack to create the dedicated
