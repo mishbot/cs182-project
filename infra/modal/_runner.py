@@ -92,7 +92,7 @@ def execute_task(task, options):
     snapshots = [("models", options["model_s3_uri"])]
     if task == "collect_activations":
         snapshots.append(("datasets", options["dataset_s3_uri"]))
-    elif task != "infer":
+    elif task not in {"infer", "orthogonalize_model"}:
         raise ValueError(f"Unknown task: {task}")
     volume = modal.Volume.from_name(CACHE_VOLUME)
     s3 = boto3.client("s3")
@@ -109,6 +109,10 @@ def execute_task(task, options):
 
                 directory = download_model(s3, options["model_s3_uri"], f"{working}/models")
                 return generate(directory, options["prompt"], options["max_new_tokens"], options["device"])
+            if task == "orthogonalize_model":
+                from cs182_project.weight_orthogonalization import orthogonalize_model
+
+                return orthogonalize_model(s3, cache_dir=working, **options)
             from cs182_project.activations import collect
 
             return collect(s3, cache_dir=working, **options)

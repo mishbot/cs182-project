@@ -192,3 +192,10 @@ Scores used for layer selection are exploratory CV results, not independent
 held-out validation estimates. GPU coefficients need not equal CPU coefficients;
 compare predictive quality and geometric invariants. Source-layer labels remain
 visible when comparing directions from different layers.
+
+## Apply a direction to model weights
+
+Use the exported directions to [derive an orthogonalized model](orthogonalization.md).
+The Modal job defaults to the non-adversarial mean-difference direction at the
+best-F1 layer, verifies the exact source-model identity, and publishes a new model
+snapshot for subsequent inference or activation collection.
