@@ -246,3 +246,24 @@ the command prints the report's S3 URI. Forwarded AWS credentials need activatio
 read/list and analyses write/multipart-abort permissions. See [analysis details](../analysis.md)
 for provisioning, retrieval, evaluation, and numerical exports. A100 runtime,
 S3 requests/storage, and applicable data transfer incur charges.
+
+## Weight orthogonalization
+
+Remove a saved direction from all Qwen residual-stream writers and publish a
+new model snapshot:
+
+```bash
+uv run --locked --extra modal modal run infra/modal/orthogonalize_model.py \
+  --model-s3-uri "$MODEL_URI"
+```
+
+The default direction is `diff_of_means_max_f1` from the latest completed analysis
+matching the exact source-model checksum. Use `--analysis-s3-uri` for a specific
+run and `--rhat` for another alias or exported name. The job reuses the prepared
+ECR runtime and source cache, with a T4 and 16 GiB host RAM by default. Rebuild
+and prepare the updated image before using this new library functionality.
+
+The final URI points to a new snapshot in the source models bucket. Tied output
+heads are preserved by untying them before embedding projection. See
+[weight orthogonalization](../orthogonalization.md) for matrix orientations,
+selection, snapshot provenance, permissions, and subsequent inference.

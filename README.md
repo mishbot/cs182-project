@@ -31,6 +31,10 @@ Prepare each selected image once in Modal; GPU tasks then reuse its published
 Modal name without pulling from ECR during execution. CodeBuild publishes new
 runtime images in eStargz format to accelerate that initial import.
 
+To derive a model with an analysis direction removed from residual-stream writers,
+see [weight orthogonalization](infra/orthogonalization.md). The Modal command
+publishes a new, independently loadable snapshot in the models bucket.
+
 ## Development checks
 
 Install the runtime dependencies and development tools into the project's uv
