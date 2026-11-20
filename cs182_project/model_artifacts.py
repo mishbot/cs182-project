@@ -5,9 +5,11 @@ from __future__ import annotations
 import fcntl
 import hashlib
 import json
+import logging
 import os
 import tempfile
 from collections.abc import Callable
+from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import TYPE_CHECKING
 from urllib.parse import urlparse
@@ -15,11 +17,13 @@ from urllib.parse import urlparse
 from ._types import JsonObject, PathInput
 
 if TYPE_CHECKING:
+    from boto3.s3.transfer import TransferConfig
     from mypy_boto3_s3 import S3Client
 
 MODEL_ID = "Qwen/Qwen1.5-1.8B-Chat"
 MODEL_REVISION = "e482ee3f73c375a627a16fdf66fd0c8279743ca6"
 MANIFEST = "artifact-manifest.json"
+logger = logging.getLogger(__name__)
 
 
 def sha256(path: PathInput) -> str:
@@ -73,7 +77,17 @@ def validate_files(manifest: JsonObject) -> set[str]:
 
 def validate_manifest(manifest: JsonObject) -> None:
     names = validate_files(manifest)
-    if not {"config.json", "tokenizer_config.json", "tokenizer.json"} <= names:
+    required = {"config.json", "tokenizer_config.json", "tokenizer.json"}
+    if manifest.get("model_format") == "legacy_qwen":
+        required = {
+            "config.json",
+            "tokenizer_config.json",
+            "qwen.tiktoken",
+            "configuration_qwen.py",
+            "modeling_qwen.py",
+            "tokenization_qwen.py",
+        }
+    if not required <= names:
         raise ValueError("Snapshot is missing model or tokenizer configuration.")
     if not any(name.endswith(".safetensors") for name in names):
         raise ValueError("Snapshot contains no safetensors weights.")
@@ -131,3 +145,92 @@ def download_snapshot(
 
 def download_model(s3: S3Client, uri: str, cache_dir: PathInput) -> Path:
     return download_snapshot(s3, uri, cache_dir, validate_manifest)
+
+
+def publish_model_snapshot(
+    s3: S3Client,
+    directory: PathInput,
+    bucket: str,
+    prefix: str,
+    *,
+    model_id: str,
+    revision: str,
+    artifact_kind: str,
+    provenance: JsonObject | None = None,
+    transfer_config: TransferConfig | None = None,
+    verify_uploaded_sizes: bool = False,
+) -> str:
+    """Publish an immutable snapshot; upload completion only after file verification succeeds."""
+    root = Path(directory)
+    if not root.is_dir():
+        raise ValueError(f"Snapshot directory does not exist: {root}")
+    if (
+        not prefix
+        or str(PurePosixPath(prefix)) != prefix
+        or PurePosixPath(prefix).is_absolute()
+        or ".." in PurePosixPath(prefix).parts
+    ):
+        raise ValueError("Expected a nonempty relative snapshot prefix without '..'.")
+    files: list[JsonObject] = []
+    for path in sorted(root.rglob("*")):
+        if path.is_symlink() or (not path.is_dir() and not path.is_file()):
+            raise ValueError(f"Snapshot contains a symlink or unsupported filesystem entry: {path}")
+        if path.is_file() and path.relative_to(root).as_posix() != MANIFEST:
+            files.append(
+                {
+                    "path": path.relative_to(root).as_posix(),
+                    "size": path.stat().st_size,
+                    "sha256": sha256(path),
+                }
+            )
+    manifest = {
+        **(provenance or {}),
+        "schema_version": 1,
+        "model_id": model_id,
+        "revision": revision,
+        "artifact_kind": artifact_kind,
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "files": files,
+    }
+    validate_manifest(manifest)
+    total = sum(entry["size"] for entry in files)
+    logger.info(
+        "Publishing %s files (%s bytes) from %s to s3://%s/%s",
+        len(files),
+        total,
+        root,
+        bucket,
+        prefix,
+    )
+    try:
+        for entry in files:
+            key = f"{prefix}/{entry['path']}"
+            logger.info("Uploading %s (%s bytes)", entry["path"], entry["size"])
+            if transfer_config is None:
+                s3.upload_file(str(root / entry["path"]), bucket, key)
+            else:
+                s3.upload_file(
+                    str(root / entry["path"]),
+                    bucket,
+                    key,
+                    Config=transfer_config,
+                    ExtraArgs={"ChecksumAlgorithm": "SHA256"},
+                )
+            if verify_uploaded_sizes:
+                remote = s3.head_object(Bucket=bucket, Key=key)
+                if remote.get("ContentLength") != entry["size"]:
+                    raise ValueError(f"Uploaded size mismatch for {key}.")
+            logger.info("Uploaded %s", entry["path"])
+        s3.put_object(
+            Bucket=bucket,
+            Key=f"{prefix}/{MANIFEST}",
+            Body=json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False).encode(),
+            ContentType="application/json",
+            IfNoneMatch="*",
+        )
+    except Exception as error:
+        raise RuntimeError(
+            f"Incomplete model at s3://{bucket}/{prefix}; no completion manifest was published: {error}"
+        ) from error
+    logger.info("Completed %s files (%s bytes): s3://%s/%s", len(files), total, bucket, prefix)
+    return f"s3://{bucket}/{prefix}"

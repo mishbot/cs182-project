@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ._types import PathInput
@@ -17,6 +19,13 @@ def load_local_model_config(model_dir: PathInput) -> PretrainedConfig:
     both in its warning and some causal-mask paths. Disabled windows should be
     None. Preserve the window when the checkpoint actually enables it.
     """
+    raw = json.loads((Path(model_dir) / "config.json").read_text())
+    if raw.get("model_type") == "qwen":
+        raise ValueError(
+            "This legacy Qwen checkpoint is archived, but execution is not supported by "
+            "the current runtime. Legacy Qwen loading is separate from the import; "
+            "no conversion or custom Python execution was performed."
+        )
     from transformers.models.auto.configuration_auto import AutoConfig
 
     config = AutoConfig.from_pretrained(model_dir, local_files_only=True, trust_remote_code=False)

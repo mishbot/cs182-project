@@ -267,3 +267,19 @@ The final URI points to a new snapshot in the source models bucket. Tied output
 heads are preserved by untying them before embedding projection. See
 [weight orthogonalization](../orthogonalization.md) for matrix orientations,
 selection, snapshot provenance, permissions, and subsequent inference.
+
+## Import an existing checkpoint from a Volume
+
+```bash
+source infra/scripts/aws-login.sh
+uv run --locked --extra modal modal run \
+  --profile mishbot --env main infra/modal/import_model.py
+```
+
+This CPU-only job mounts `cs182-runs` read-only and copies `/v1/merged` directly
+to a fresh prefix in the models bucket. It uses a small uv-built boto3 image;
+no ECR preparation or GPU is needed. The final output is the new S3 snapshot URI.
+`--volume-name`, `--volume-environment`, `--source-path`, `--name`, and `--bucket`
+override its defaults. The Modal profile and forwarded AWS credentials are
+independent. See [checkpoint import](../import_model.md) for permissions,
+integrity, retries, and legacy-Qwen compatibility limitations.

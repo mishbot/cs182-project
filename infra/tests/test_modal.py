@@ -10,7 +10,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -32,6 +32,21 @@ if MODAL_AVAILABLE:
 
 @unittest.skipUnless(MODAL_AVAILABLE, "Install the modal extra")
 class ModalAnalysisTest(unittest.TestCase):
+    def test_worker_deserializes_when_image_has_an_unrelated_analysis_script(self):
+        from modal._serialization import deserialize, serialize
+
+        # Match `modal run infra/modal/analyze_activations.py`: the CLI loads
+        # the launcher under its basename, rather than its package name.
+        spec = importlib.util.spec_from_file_location("analyze_activations", MODAL_DIR / "analyze_activations.py")
+        launcher = importlib.util.module_from_spec(spec)
+        with patch.dict(sys.modules, {"analyze_activations": launcher}):
+            spec.loader.exec_module(launcher)
+            payload = serialize(launcher.execute_analysis)
+            image_script = ModuleType("analyze_activations")
+            image_script.__file__ = "/app/analyze_activations.py"
+            sys.modules["analyze_activations"] = image_script
+            self.assertIs(deserialize(payload, None), runner.execute_analysis)
+
     def test_gpu_entrypoint_uses_prepared_image_and_forwards_selection(self):
         app = MagicMock()
         app.run.return_value = nullcontext()

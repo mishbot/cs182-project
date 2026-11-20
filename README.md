@@ -88,6 +88,10 @@ To derive a model with an analysis direction removed from residual-stream writer
 see [weight orthogonalization](infra/orthogonalization.md). The Modal command
 publishes a new, independently loadable snapshot in the models bucket.
 
+To copy an existing checkpoint from a Modal Volume into the models bucket without
+local weight downloads, see [Modal checkpoint import](infra/import_model.md).
+The importer preserves the legacy Qwen format without adding execution support.
+
 ## Development checks
 
 Install the runtime dependencies and development tools into the project's uv

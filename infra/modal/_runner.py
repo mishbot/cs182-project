@@ -83,6 +83,28 @@ def runtime_image(reference):
     return modal.Image.from_name(modal_image_name(reference)).add_local_python_source("infra.modal")
 
 
+def execute_analysis(options):
+    """Use the image's isolated GPU environment; inherit stdout/stderr for Modal streaming."""
+    # Keep the worker in the uploaded package: a CLI file loaded by basename
+    # would collide with the image's unrelated /app/analyze_activations.py.
+    import subprocess
+
+    with tempfile.TemporaryDirectory(prefix="cs182-gpu-analysis-") as directory:
+        command = ["/app/.analysis-venv/bin/python", "/app/analyze_activations.py",
+                   "--backend", "cuml", "--output-dir", directory]
+        for key, value in options.items():
+            if value is None or value == "":
+                continue
+            if isinstance(value, bool):
+                if value:
+                    command.append("--" + key.replace("_", "-"))
+            else:
+                command.extend(["--" + key.replace("_", "-"), str(value)])
+        # Avoid leaking the parent's venv selection into the subprocess's libraries.
+        environment = {**os.environ, "VIRTUAL_ENV": "/app/.analysis-venv"}
+        subprocess.run(command, check=True, env=environment)
+
+
 def execute_task(task, options):
     """Remote worker: use the image's library and persist only input snapshots."""
     import boto3

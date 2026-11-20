@@ -3,20 +3,25 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import logging
 import re
 import shutil
 import tempfile
 import uuid
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from ._model_config import load_local_model_config
 from ._types import Device, JsonObject, PathInput
 from .analysis_directions import DEFAULT_RHAT, json_object, load_analysis_direction, read_object
-from .model_artifacts import MANIFEST, download_model, parse_s3_uri, sha256, validate_manifest
+from .model_artifacts import (
+    MANIFEST,
+    download_model,
+    parse_s3_uri,
+    publish_model_snapshot,
+    sha256,
+    validate_manifest,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -140,45 +145,16 @@ def publish_model(
     """Publish all model files before the standard snapshot completion marker."""
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]+", name):
         raise ValueError("Invalid derived model name.")
-    root = Path(directory)
-    files = [
-        {
-            "path": path.relative_to(root).as_posix(),
-            "size": path.stat().st_size,
-            "sha256": sha256(path),
-        }
-        for path in sorted(root.rglob("*"))
-        if path.is_file()
-        and path.name != MANIFEST
-        and not any(part.startswith(".") for part in path.relative_to(root).parts)
-    ]
-    manifest = {
-        "schema_version": 1,
-        "model_id": name,
-        "revision": identifier,
-        "artifact_kind": "orthogonalized_model",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "files": files,
-        **provenance,
-    }
-    validate_manifest(manifest)
-    prefix = f"models/{name}"
-    try:
-        for entry in files:
-            logger.info("Uploading %s", entry["path"])
-            s3.upload_file(str(root / entry["path"]), bucket, f"{prefix}/{entry['path']}")
-        s3.put_object(
-            Bucket=bucket,
-            Key=f"{prefix}/{MANIFEST}",
-            Body=json.dumps(manifest, sort_keys=True, indent=2, allow_nan=False).encode(),
-            ContentType="application/json",
-            IfNoneMatch="*",
-        )
-    except Exception as error:
-        raise RuntimeError(
-            f"Incomplete model at s3://{bucket}/{prefix}; no completion manifest was published: {error}"
-        ) from error
-    return f"s3://{bucket}/{prefix}"
+    return publish_model_snapshot(
+        s3,
+        directory,
+        bucket,
+        f"models/{name}",
+        model_id=name,
+        revision=identifier,
+        artifact_kind="orthogonalized_model",
+        provenance=provenance,
+    )
 
 
 def orthogonalize_model(

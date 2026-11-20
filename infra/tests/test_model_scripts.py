@@ -220,6 +220,9 @@ class GenerationTest(unittest.TestCase):
         })
         self.modules.start()
         self.addCleanup(self.modules.stop)
+        config_loader = patch.object(inference, "load_local_model_config", return_value=self.model.config)
+        config_loader.start()
+        self.addCleanup(config_loader.stop)
 
     def test_chat_template_response_slicing_and_cpu_fallback(self):
         inference.generate("/snapshot", "hello", 10, "auto")

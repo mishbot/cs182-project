@@ -5,30 +5,9 @@ import os
 import modal
 
 from cs182_project.model_artifacts import parse_s3_uri
-from infra.modal._runner import aws_environment, runtime_image
+from infra.modal._runner import aws_environment, execute_analysis, runtime_image
 
 app = modal.App("cs182-modal-analysis-cli")
-
-
-def execute_analysis(options):
-    """Use the image's isolated GPU environment; inherit stdout/stderr for Modal streaming."""
-    import subprocess
-    import tempfile
-
-    with tempfile.TemporaryDirectory(prefix="cs182-gpu-analysis-") as directory:
-        command = ["/app/.analysis-venv/bin/python", "/app/analyze_activations.py",
-                   "--backend", "cuml", "--output-dir", directory]
-        for key, value in options.items():
-            if value is None or value == "":
-                continue
-            if isinstance(value, bool):
-                if value:
-                    command.append("--" + key.replace("_", "-"))
-            else:
-                command.extend(["--" + key.replace("_", "-"), str(value)])
-        # Avoid leaking the parent's venv selection into the subprocess's libraries.
-        environment = {**os.environ, "VIRTUAL_ENV": "/app/.analysis-venv"}
-        subprocess.run(command, check=True, env=environment)
 
 
 @app.local_entrypoint()
