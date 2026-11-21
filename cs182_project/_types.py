@@ -89,6 +89,7 @@ class RunMetadata(_SampleSize, total=False):
     hidden_size: int
     layer_index_base: int
     activation_semantics: str
+    model_execution: JsonObject
     sampling: str
     selected_source_row_indices: list[int]
     class_counts: dict[HarmLabel, int]

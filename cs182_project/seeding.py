@@ -1,16 +1,29 @@
-"""Archive Hugging Face model and dataset snapshots in S3."""
+"""Archive the pinned ModelScope original model and Hugging Face datasets in S3."""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
 from os import fspath
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
 from ._types import ArtifactFile, DatasetHub, JsonObject, PathInput
 from .dataset_artifacts import DATASET_ID, DATASET_URL, SPLITS, validate_dataset_manifest
-from .model_artifacts import MANIFEST, MODEL_ID, MODEL_REVISION, sha256, validate_manifest
+from .model_artifacts import (
+    MANIFEST,
+    MODEL_ID,
+    MODEL_NAME,
+    MODEL_REPOSITORY,
+    MODEL_REVISION,
+    publish_model_snapshot,
+    sha256,
+)
 
 if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
@@ -26,26 +39,7 @@ def validate_model_destination(revision: str, prefix: str) -> None:
         raise ValueError("--prefix must be a nonempty S3 snapshot prefix without '..'")
 
 
-def seed_model(
-    s3: S3Client,
-    bucket: str,
-    revision: str = MODEL_REVISION,
-    prefix: str | None = None,
-    cache_dir: PathInput = "/cache/huggingface",
-) -> str:
-    """Download a pinned model and publish its snapshot; return its S3 URI."""
-    prefix = (prefix or f"models/Qwen1.5-1.8B-Chat/{revision}").strip("/")
-    validate_model_destination(revision, prefix)
-    from huggingface_hub import snapshot_download
-
-    snapshot = snapshot_download(repo_id=MODEL_ID, revision=revision, cache_dir=fspath(cache_dir))
-    return seed(s3, snapshot, bucket, prefix, revision)
-
-
-def seed(s3: S3Client, snapshot: PathInput, bucket: str, prefix: str, revision: str) -> str:
-    """Publish an existing local model snapshot and return its S3 URI."""
-    validate_model_destination(revision, prefix)
-    # Only an absent manifest may be seeded. Other AWS errors must not be hidden.
+def _check_unpublished(s3: S3Client, bucket: str, prefix: str) -> None:
     from botocore.exceptions import ClientError
 
     try:
@@ -55,33 +49,92 @@ def seed(s3: S3Client, snapshot: PathInput, bucket: str, prefix: str, revision: 
             raise
     else:
         raise ValueError("Snapshot already published. Use a new prefix for a new model revision.")
-    root = Path(snapshot)
-    files: list[ArtifactFile] = []
-    for path in sorted(root.rglob("*")):
-        relative = path.relative_to(root)
-        if not path.is_file() or any(part.startswith(".") for part in relative.parts):
-            continue
-        files.append(
-            {"path": relative.as_posix(), "size": path.stat().st_size, "sha256": sha256(path)}
+
+
+def download_original_model(revision: str, cache_dir: PathInput) -> Path:
+    """Checkout an immutable ModelScope commit and verify its Git LFS content identities."""
+    root = Path(cache_dir).expanduser().resolve() / MODEL_NAME / revision
+    root.parent.mkdir(parents=True, exist_ok=True)
+    environment = {**os.environ, "GIT_LFS_SKIP_SMUDGE": "1", "GIT_TERMINAL_PROMPT": "0"}
+    if not (root / ".git").exists():
+        subprocess.run(
+            [
+                "git",
+                "clone",
+                "--filter=blob:none",
+                "--no-checkout",
+                "--depth",
+                "1",
+                MODEL_REPOSITORY,
+                str(root),
+            ],
+            env=environment,
+            check=True,
+            stdout=sys.stderr,
         )
-    manifest: JsonObject = {
-        "schema_version": 1,
-        "model_id": MODEL_ID,
-        "revision": revision,
-        "files": files,
-    }
-    validate_manifest(manifest)
-    for entry in files:
-        logger.info("Uploading %s", entry["path"])
-        s3.upload_file(str(root / entry["path"]), bucket, f"{prefix}/{entry['path']}")
-    s3.put_object(
-        Bucket=bucket,
-        Key=f"{prefix}/{MANIFEST}",
-        Body=json.dumps(manifest, sort_keys=True, indent=2).encode(),
-        ContentType="application/json",
-        IfNoneMatch="*",
-    )
-    return f"s3://{bucket}/{prefix}"
+
+    def git(*arguments: str) -> bytes:
+        return subprocess.check_output(["git", "-C", str(root), *arguments], env=environment)
+
+    git("lfs", "version")
+    git("fetch", "--depth", "1", "origin", revision)
+    git("checkout", "--detach", revision)
+    if git("rev-parse", "HEAD").decode().strip() != revision:
+        raise ValueError("ModelScope checkout does not match the requested immutable revision.")
+    git("lfs", "pull", "origin")
+    for entry in git("lfs", "ls-files", "--long").decode().splitlines():
+        digest, relative = entry.split(" ", 1)
+        relative = relative[2:]  # '* path' or '- path' in git-lfs ls-files output.
+        if sha256(root / relative) != digest:
+            raise ValueError(f"Git LFS checksum mismatch: {relative}")
+    return root
+
+
+def seed_model(
+    s3: S3Client,
+    bucket: str,
+    revision: str = MODEL_REVISION,
+    prefix: str | None = None,
+    cache_dir: PathInput = "/cache/modelscope",
+) -> str:
+    """Download the original ModelScope model; never seed from the fine-tuned import."""
+    prefix = (prefix or f"models/{MODEL_NAME}/{revision}").strip("/")
+    validate_model_destination(revision, prefix)
+    _check_unpublished(s3, bucket, prefix)
+    snapshot = download_original_model(revision, cache_dir)
+    return seed(s3, snapshot, bucket, prefix, revision)
+
+
+def seed(s3: S3Client, snapshot: PathInput, bucket: str, prefix: str, revision: str) -> str:
+    """Publish model assets without Git/cache metadata, preserving all checkpoint bytes."""
+    validate_model_destination(revision, prefix)
+    _check_unpublished(s3, bucket, prefix)
+    root = Path(snapshot)
+    with tempfile.TemporaryDirectory(prefix="cs182-original-qwen-") as temporary:
+        staging = Path(temporary)
+        for path in sorted(root.rglob("*")):
+            relative = path.relative_to(root)
+            if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+                destination = staging / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(path, destination)
+        return publish_model_snapshot(
+            s3,
+            staging,
+            bucket,
+            prefix,
+            model_id=MODEL_ID,
+            revision=revision,
+            artifact_kind="upstream_model",
+            provenance={
+                "model_format": "legacy_qwen",
+                "upstream": {
+                    "provider": "modelscope",
+                    "repository": MODEL_REPOSITORY,
+                    "revision": revision,
+                },
+            },
+        )
 
 
 def seed_dataset(

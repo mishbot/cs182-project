@@ -22,13 +22,15 @@ from .model_artifacts import (
     sha256,
     validate_manifest,
 )
+from .qwen_model import load_model, output_head, residual_writers, token_embeddings
 
 if TYPE_CHECKING:
     import numpy as np
     from mypy_boto3_s3 import S3Client
     from numpy.typing import NDArray
     from torch import Tensor
-    from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Model
+    from torch.nn import Module
+    from transformers import PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
@@ -64,17 +66,12 @@ def project_weight(
             view.copy_((values - update).to(dtype=weight.dtype))
 
 
-def orthogonalize_weights(model: Qwen2ForCausalLM, direction: NDArray[np.float64]) -> JsonObject:
+def orthogonalize_weights(model: PreTrainedModel, direction: NDArray[np.float64]) -> JsonObject:
     """Change only embedding/attention-output/MLP-output writers; preserve any tied LM head."""
     import torch
 
-    if model.config.model_type != "qwen2":
-        raise ValueError(
-            "Weight orthogonalization currently supports Qwen2 causal language models."
-        )
-    backbone = cast("Qwen2Model", model.model)
-    embedding_module = cast(torch.nn.Embedding, backbone.embed_tokens)
-    output_head = cast(torch.nn.Linear, model.get_output_embeddings())
+    embedding_module = token_embeddings(model)
+    head = output_head(model)
     rhat = torch.as_tensor(direction, dtype=torch.float32, device=embedding_module.weight.device)
     if (
         rhat.shape != (model.config.hidden_size,)
@@ -84,23 +81,20 @@ def orthogonalize_weights(model: Qwen2ForCausalLM, direction: NDArray[np.float64
         raise ValueError("Expected a finite nonzero direction matching the model's hidden size.")
     rhat = rhat / rhat.norm()
     embeddings = embedding_module.weight
-    tied = output_head.weight.data_ptr() == embeddings.data_ptr()
+    tied = head.weight.data_ptr() == embeddings.data_ptr()
     if tied:
-        output_head.weight = torch.nn.Parameter(
-            output_head.weight.detach().clone(), requires_grad=output_head.weight.requires_grad
+        head.weight = torch.nn.Parameter(
+            head.weight.detach().clone(), requires_grad=head.weight.requires_grad
         )
     # A checkpoint can request tying even if the two Parameter objects were untied externally.
     # Disable it during serialization too, so reload cannot replace the preserved LM head.
     model.config.tie_word_embeddings = False
-    writers: list[tuple[str, Tensor, bool]] = [("model.embed_tokens.weight", embeddings, True)]
+    writers: list[tuple[str, Tensor, bool]] = [("transformer.wte.weight", embeddings, True)]
     biases: list[tuple[str, Tensor]] = []
-    for layer_index, layer in enumerate(backbone.layers):
-        for suffix in ("self_attn.o_proj", "mlp.down_proj"):
-            module = cast(torch.nn.Linear, layer.get_submodule(suffix))
-            prefix = f"model.layers.{layer_index}.{suffix}"
-            writers.append((prefix + ".weight", module.weight, False))
-            if module.bias is not None:
-                biases.append((prefix + ".bias", module.bias))
+    for prefix, module in residual_writers(model):
+        writers.append((prefix + ".weight", module.weight, False))
+        if module.bias is not None:
+            biases.append((prefix + ".bias", module.bias))
     modified: list[JsonObject] = []
     for name, weight, embedding in writers:
         logger.info("Projecting %s %s (%s)", name, tuple(weight.shape), weight.dtype)
@@ -130,7 +124,7 @@ def orthogonalize_weights(model: Qwen2ForCausalLM, direction: NDArray[np.float64
         "compute_dtype": "float32",
         "modified_parameters": modified,
         "lm_head_untied": tied,
-        "positional_embeddings": "No learned additive position matrix: Qwen2 uses RoPE; rotary parameters unchanged.",
+        "positional_embeddings": "No learned additive position matrix: original Qwen uses RoPE; rotary parameters unchanged.",
     }
 
 
@@ -183,8 +177,8 @@ def orthogonalize_model(
     ):
         raise ValueError("Source config checksum/size mismatch.")
     config_data = json_object(config_bytes)
-    if config_data.get("model_type") != "qwen2" or config_data.get("quantization_config"):
-        raise ValueError("Expected an unquantized Qwen2 causal language model.")
+    if config_data.get("model_type") != "qwen" or config_data.get("quantization_config"):
+        raise ValueError("Expected an unquantized original Qwen causal language model.")
     selected = load_analysis_direction(
         s3,
         source_sha,
@@ -195,7 +189,6 @@ def orthogonalize_model(
         rhat=rhat,
     )
     import torch
-    from transformers.models.auto.modeling_auto import AutoModelForCausalLM
 
     resolved_device = (
         ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
@@ -206,22 +199,11 @@ def orthogonalize_model(
     if sha256(directory / MANIFEST) != source_sha:
         raise ValueError("Source model manifest changed during direction selection.")
     config = load_local_model_config(directory)
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            directory,
-            config=config,
-            torch_dtype="auto",
-            local_files_only=True,
-            trust_remote_code=False,
-            use_safetensors=True,
-        )
-        .to(resolved_device)
-        .eval()
-    )
+    model = load_model(directory, resolved_device, config=config, preserve_dtype=True)
     transformation = orthogonalize_weights(model, selected.vector)
-    model.to("cpu")
+    cast("Module", model).to("cpu")
     identifier = uuid.uuid4().hex
-    source_name = str(source.get("model_id", "Qwen1.5-1.8B-Chat")).rsplit("/", 1)[-1]
+    source_name = str(source.get("model_id", "Qwen-1_8B-Chat")).rsplit("/", 1)[-1]
     source_name = re.sub(r"[^A-Za-z0-9_.-]", "_", source_name).lstrip("._-")
     name = f"{source_name}-{rhat}-{identifier}"
     with tempfile.TemporaryDirectory(prefix="cs182-orthogonalized-") as temporary:
@@ -247,6 +229,7 @@ def orthogonalize_model(
             name,
             identifier,
             {
+                "model_format": "legacy_qwen",
                 "source_model": {
                     "s3_uri": model_s3_uri,
                     "manifest_sha256": source_sha,

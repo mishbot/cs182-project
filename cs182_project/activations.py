@@ -32,6 +32,16 @@ from ._types import (
 from .dataset_artifacts import download_dataset
 from .dataset_partition import load_partition, partition_uri
 from .model_artifacts import MANIFEST, download_model, parse_s3_uri, sha256
+from .qwen_model import (
+    PROMPT_FORMAT,
+    SYSTEM_MESSAGE,
+    backbone,
+    decoder_blocks,
+    format_chat,
+    load_model,
+    load_tokenizer,
+    output_head,
+)
 
 if TYPE_CHECKING:
     import numpy as np
@@ -40,7 +50,7 @@ if TYPE_CHECKING:
     from numpy.typing import NDArray
     from torch import Tensor
     from torch.nn import Module
-    from transformers.models.qwen2.modeling_qwen2 import Qwen2ForCausalLM, Qwen2Model
+    from transformers import PreTrainedModel
     from transformers.tokenization_utils_base import PreTrainedTokenizerBase
 
 logger = logging.getLogger(__name__)
@@ -117,17 +127,7 @@ def prepare_inputs(
     limit = min(max_input_tokens, context_window)
     prepared: list[PreparedInput] = []
     for row in selected:
-        text = cast(
-            str,
-            tokenizer.apply_chat_template(
-                [{"role": "user", "content": row["prompt"]}],
-                tokenize=False,
-                add_generation_prompt=True,
-            ),
-        )
-        encoded = tokenizer(
-            text, add_special_tokens=False, truncation=False, return_attention_mask=True
-        )
+        encoded = format_chat(tokenizer, row["prompt"])
         count = len(cast(list[int], encoded["input_ids"]))
         if count > limit:
             raise ValueError(
@@ -139,11 +139,11 @@ def prepare_inputs(
     return prepared
 
 
-def capture_batch(backbone: Qwen2Model, batch: TensorBatch) -> tuple[NDArray[np.float32], Tensor]:
+def capture_batch(transformer: Module, batch: TensorBatch) -> tuple[NDArray[np.float32], Tensor]:
     """Capture only [batch, hidden] per layer; do not retain full hidden-state histories."""
     import torch
 
-    layers = backbone.layers
+    layers = decoder_blocks(transformer)
     captured: list[Tensor | None] = [None] * len(layers)
     positions = batch["attention_mask"].sum(dim=1) - 1
     indices = torch.arange(positions.shape[0], device=positions.device)
@@ -166,7 +166,7 @@ def capture_batch(backbone: Qwen2Model, batch: TensorBatch) -> tuple[NDArray[np.
         for index, layer in enumerate(layers):
             handles.append(layer.register_forward_hook(hook_for(index)))
         with torch.inference_mode():
-            output = backbone(
+            output = transformer(
                 **batch, use_cache=False, output_hidden_states=False, output_attentions=False
             )
             final_hidden = output.last_hidden_state[indices, positions]
@@ -226,7 +226,7 @@ def next_token_statistics(
 
 
 def activation_batches(
-    model: Qwen2ForCausalLM,
+    model: PreTrainedModel,
     tokenizer: PreTrainedTokenizerBase,
     prepared: Sequence[PreparedInput],
     batch_size: int,
@@ -245,8 +245,8 @@ def activation_batches(
             ),
         )
         with torch.inference_mode():
-            vectors, final_hidden = capture_batch(model.model, batch)
-            statistics = next_token_statistics(model.lm_head(final_hidden), refusal_token_ids)
+            vectors, final_hidden = capture_batch(backbone(model), batch)
+            statistics = next_token_statistics(output_head(model)(final_hidden), refusal_token_ids)
         yield [
             ActivationRow(**row, activations=vector.tolist(), **stats)
             for (row, _), vector, stats in zip(chunk, vectors, statistics)
@@ -374,8 +374,6 @@ def collect(
         parse_s3_uri(uri)
     import pyarrow.parquet as pq
     import torch
-    from transformers.models.auto.modeling_auto import AutoModelForCausalLM
-    from transformers.models.auto.tokenization_auto import AutoTokenizer
 
     device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
     if device == "cuda" and not torch.cuda.is_available():
@@ -404,31 +402,14 @@ def collect(
     selected = sample_prompts(rows, sample_size, seed, membership)
     model_dir = download_model(s3, model_s3_uri, cache / "models")
     config = load_local_model_config(model_dir)
-    if config.model_type != "qwen2":
-        raise ValueError(
-            "Activation extraction currently supports the Qwen2 architecture used by Qwen1.5."
-        )
-    tokenizer = AutoTokenizer.from_pretrained(
-        model_dir, local_files_only=True, trust_remote_code=False
-    )
+    tokenizer = load_tokenizer(model_dir)
     refusal_ids = (40, 2121)
     if [tokenizer.decode([i]) for i in refusal_ids] != ["I", "As"]:
         raise ValueError(
             "The tokenizer does not match the paper's Qwen Chat refusal IDs (40, 2121)."
         )
     prepared = prepare_inputs(tokenizer, selected, max_input_tokens, config.max_position_embeddings)
-    model = (
-        AutoModelForCausalLM.from_pretrained(
-            model_dir,
-            config=config,
-            local_files_only=True,
-            trust_remote_code=False,
-            use_safetensors=True,
-            torch_dtype=torch.float16 if device == "cuda" else torch.float32,
-        )
-        .to(device)
-        .eval()
-    )
+    model = load_model(model_dir, device, config=config)
     model_manifest = json.loads((model_dir / MANIFEST).read_text())
     labels: tuple[HarmLabel, HarmLabel] = ("harmful", "unharmful")
     metadata: RunMetadata = {
@@ -455,6 +436,13 @@ def collect(
         "hidden_size": config.hidden_size,
         "layer_index_base": 0,
         "activation_semantics": ACTIVATION_SEMANTICS,
+        "model_execution": {
+            "architecture": "qwen",
+            "prompt_format": PROMPT_FORMAT,
+            "system_message": SYSTEM_MESSAGE,
+            "use_flash_attn": False,
+            "use_cache_quantization": False,
+        },
         "sampling": "balanced_harmfulness_x_adversarial_unique_exact_prompts_without_ambiguous_labels",
         "selected_source_row_indices": [row["source_row_index"] for row in selected],
         "class_counts": {

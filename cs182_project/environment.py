@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING
 
 from ._types import JsonObject
 from .dataset_artifacts import validate_dataset_manifest
-from .model_artifacts import MANIFEST, MODEL_ID, MODEL_REVISION, validate_manifest
+from .model_artifacts import MANIFEST, MODEL_ID, MODEL_NAME, MODEL_REVISION, validate_manifest
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -111,10 +111,14 @@ def discover_modal_environment(
     prefix = f"{project}-{account}-{region}"
     s3 = session.client("s3", region_name=region)
     ecr = session.client("ecr", region_name=region)
-    model_prefix = f"models/Qwen1.5-1.8B-Chat/{MODEL_REVISION}"
+    model_prefix = f"models/{MODEL_NAME}/{MODEL_REVISION}"
     model = _read_manifest(s3, f"{prefix}-models", f"{model_prefix}/{MANIFEST}")
     validate_manifest(model)
-    if model.get("model_id") != MODEL_ID or model.get("revision") != MODEL_REVISION:
+    if (
+        model.get("model_id") != MODEL_ID
+        or model.get("revision") != MODEL_REVISION
+        or model.get("upstream", {}).get("provider") != "modelscope"
+    ):
         raise ValueError(
             "The model manifest does not match the project's pinned model and revision."
         )

@@ -1,0 +1,20 @@
+{
+  "model_type": "qwen",
+  "architectures": ["QWenLMHeadModel"],
+  "auto_map": {
+    "AutoConfig": "configuration_qwen.QWenConfig",
+    "AutoModelForCausalLM": "modeling_qwen.QWenLMHeadModel"
+  },
+  "hidden_size": 16,
+  "intermediate_size": 64,
+  "num_hidden_layers": 2,
+  "num_attention_heads": 2,
+  "kv_channels": 8,
+  "vocab_size": 151936,
+  "seq_length": 128,
+  "max_position_embeddings": 128,
+  "fp32": true,
+  "use_flash_attn": false,
+  "no_bias": true,
+  "tie_word_embeddings": false
+}

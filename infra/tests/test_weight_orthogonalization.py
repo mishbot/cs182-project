@@ -17,7 +17,7 @@ AVAILABLE = all(importlib.util.find_spec(name) for name in ('torch', 'transforme
 if AVAILABLE:
     import numpy as np
     import torch
-    from transformers import Qwen2ForCausalLM
+    from cs182_project.qwen_model import load_model
 
 
 class AnalysisS3(MemoryS3):
@@ -94,10 +94,10 @@ class WeightOrthogonalizationTest(unittest.TestCase):
             # Existing checkpoints may contain an index superseded by save_pretrained.
             (source/'pytorch_model.bin.index.json').write_text('{}')
             files = {path.name: path.read_bytes() for path in source.iterdir() if path.is_file()}
-            s3.snapshot('models', 'models/Qwen1.5-1.8B-Chat/base', files,
-                        model_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION)
-            source_uri = 's3://models/models/Qwen1.5-1.8B-Chat/base'
-            manifest_bytes = s3.objects['models', 'models/Qwen1.5-1.8B-Chat/base/'+artifacts.MANIFEST]
+            s3.snapshot('models', 'models/Qwen-1_8B-Chat/base', files,
+                        model_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION, model_format="legacy_qwen")
+            source_uri = 's3://models/models/Qwen-1_8B-Chat/base'
+            manifest_bytes = s3.objects['models', 'models/Qwen-1_8B-Chat/base/'+artifacts.MANIFEST]
             checksum = hashlib.sha256(manifest_bytes).hexdigest()
             matching = analysis_snapshot(s3, 'matching', checksum, direction)
             other = analysis_snapshot(s3, 'other', '0'*64, -direction)
@@ -109,12 +109,12 @@ class WeightOrthogonalizationTest(unittest.TestCase):
             uri = orthogonalization.orthogonalize_model(
                 s3, model_s3_uri=source_uri, analysis_root_s3_uri='s3://analyses/runs',
                 device='cpu', cache_dir=root/'cache')
-            self.assertRegex(uri, r'^s3://models/models/Qwen1\.5-1\.8B-Chat-diff_of_means_max_f1-[0-9a-f]{32}$')
+            self.assertRegex(uri, r'^s3://models/models/Qwen-1_8B-Chat-diff_of_means_max_f1-[0-9a-f]{32}$')
             self.assertEqual(s3.uploads[-1][1], uri.removeprefix('s3://models/')+'/'+artifacts.MANIFEST)
             directory = artifacts.download_model(s3, uri, root/'derived-cache')
-            result = Qwen2ForCausalLM.from_pretrained(directory, local_files_only=True)
+            result = load_model(directory, "cpu")
             self.assertFalse(result.config.tie_word_embeddings)
-            self.assertNotEqual(result.lm_head.weight.data_ptr(), result.model.embed_tokens.weight.data_ptr())
+            self.assertNotEqual(result.lm_head.weight.data_ptr(), result.transformer.wte.weight.data_ptr())
             manifest = json.loads((directory/artifacts.MANIFEST).read_text())
             self.assertEqual(manifest['direction']['analysis_id'], 'matching')
             self.assertEqual(manifest['source_model']['manifest_sha256'], checksum)
@@ -125,7 +125,7 @@ class WeightOrthogonalizationTest(unittest.TestCase):
             modified = {entry['name'] for entry in manifest['transformation']['modified_parameters']}
             self.assertEqual(len(modified), 1 + 2*model.config.num_hidden_layers)
             for name, weight in result.state_dict().items():
-                expected = (original[name] @ projector if name == 'model.embed_tokens.weight'
+                expected = (original[name] @ projector if name == 'transformer.wte.weight'
                             else projector @ original[name] if name in modified else original[name])
                 if name in modified:
                     torch.testing.assert_close(weight, expected, atol=1e-7, rtol=1e-5)

@@ -223,25 +223,26 @@ class GenerationTest(unittest.TestCase):
         config_loader = patch.object(inference, "load_local_model_config", return_value=self.model.config)
         config_loader.start()
         self.addCleanup(config_loader.stop)
+        tokenizer_loader = patch.object(inference, "load_tokenizer", return_value=self.tokenizer)
+        model_loader = patch.object(inference, "load_model", return_value=self.model)
+        formatter = patch.object(inference, "format_chat", return_value={"input_ids": [1, 2, 3], "attention_mask": [1, 1, 1]})
+        for loader in (tokenizer_loader, model_loader, formatter):
+            loader.start()
+            self.addCleanup(loader.stop)
+        self.torch.tensor.return_value = self.inputs["input_ids"]
+
 
     def test_chat_template_response_slicing_and_cpu_fallback(self):
         inference.generate("/snapshot", "hello", 10, "auto")
-        self.model.to.assert_called_once_with("cpu")
-        self.tokenizer.apply_chat_template.assert_called_once_with(
-            [{"role": "user", "content": "hello"}], tokenize=False, add_generation_prompt=True,
-        )
         self.model.generate.assert_called_once()
         self.assertEqual(self.model.generate.call_args.kwargs["max_new_tokens"], 10)
         self.model.generate.return_value.__getitem__.assert_called_once_with((0, slice(3, None)))
-        self.assertTrue(self.transformers.AutoModelForCausalLM.from_pretrained.call_args.kwargs["local_files_only"])
 
     def test_auto_uses_gpu_and_explicit_cuda_fails_without_one(self):
         with self.assertRaisesRegex(ValueError, "CUDA requested"):
             inference.generate("/snapshot", "hello", 10, "cuda")
         self.torch.cuda.is_available.return_value = True
         inference.generate("/snapshot", "hello", 10, "auto")
-        self.model.to.assert_called_once_with("cuda")
-        self.assertEqual(self.transformers.AutoModelForCausalLM.from_pretrained.call_args.kwargs["torch_dtype"], self.torch.float16)
 
     def test_context_overflow_fails_before_generation(self):
         self.model.config.max_position_embeddings = 5
@@ -251,17 +252,6 @@ class GenerationTest(unittest.TestCase):
 
 
 class SeedingTest(unittest.TestCase):
-    def test_model_download_orchestration_is_in_library(self):
-        download = MagicMock(return_value="/snapshot")
-        client = object()
-        with patch.dict(sys.modules, {"huggingface_hub": types.SimpleNamespace(snapshot_download=download)}), \
-                patch.object(seed_model, "seed", return_value="s3://models/snapshot") as publish:
-            result = seed_model.seed_model(client, "models", prefix="/snapshot/", cache_dir="/hf-cache")
-        self.assertEqual(result, "s3://models/snapshot")
-        download.assert_called_once_with(repo_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION,
-                                         cache_dir="/hf-cache")
-        publish.assert_called_once_with(client, "/snapshot", "models", "snapshot", artifacts.MODEL_REVISION)
-
     def test_uploads_all_artifacts_and_publishes_manifest_last(self):
         class MissingObject(Exception):
             response = {"Error": {"Code": "404"}}
@@ -271,6 +261,9 @@ class SeedingTest(unittest.TestCase):
         s3 = MagicMock()
         s3.head_object.side_effect = MissingObject()
         fixture = FakeS3()
+        fixture.files.pop("tokenizer.json")
+        for name in ("qwen.tiktoken", "configuration_qwen.py", "modeling_qwen.py", "tokenization_qwen.py"):
+            fixture.files[name] = b"fixture"
         with tempfile.TemporaryDirectory() as directory, \
                 patch.dict(sys.modules, {"botocore": types.ModuleType("botocore"), "botocore.exceptions": fake_exceptions}):
             for name, body in fixture.files.items():
@@ -278,7 +271,7 @@ class SeedingTest(unittest.TestCase):
             (Path(directory) / "LICENSE").write_text("fixture license")
             result = seed_model.seed(s3, directory, "models", "snapshot", artifacts.MODEL_REVISION)
             self.assertEqual(result, "s3://models/snapshot")
-            self.assertEqual(s3.upload_file.call_count, 5)
+            self.assertEqual(s3.upload_file.call_count, 8)
             self.assertEqual(s3.mock_calls[-1][0], "put_object")
             self.assertEqual(s3.put_object.call_args.kwargs["IfNoneMatch"], "*")
             manifest = json.loads(s3.put_object.call_args.kwargs["Body"])

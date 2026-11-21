@@ -20,8 +20,10 @@ if TYPE_CHECKING:
     from boto3.s3.transfer import TransferConfig
     from mypy_boto3_s3 import S3Client
 
-MODEL_ID = "Qwen/Qwen1.5-1.8B-Chat"
-MODEL_REVISION = "e482ee3f73c375a627a16fdf66fd0c8279743ca6"
+MODEL_ID = "qwen/Qwen-1_8B-Chat"
+MODEL_NAME = "Qwen-1_8B-Chat"
+MODEL_REPOSITORY = "https://www.modelscope.cn/qwen/Qwen-1_8B-Chat.git"
+MODEL_REVISION = "8ccdac8e9f629044d6ac33d81d0a4f08bf6d7954"
 MANIFEST = "artifact-manifest.json"
 logger = logging.getLogger(__name__)
 

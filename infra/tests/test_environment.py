@@ -36,7 +36,7 @@ class DiscoveryTest(unittest.TestCase):
             "files": [{"path": name, "size": 1, "sha256": "0" * 64}
                       for name in [*SPLITS.values(), "README.md"]],
         }
-        self.model = dict(FakeS3().manifest, model_id=MODEL_ID)
+        self.model = dict(FakeS3().manifest, model_id=MODEL_ID, upstream={"provider": "modelscope"})
         self.bodies = []
 
         def get_object(**kwargs):
@@ -69,7 +69,7 @@ class DiscoveryTest(unittest.TestCase):
         values = discover_modal_environment(self.session)
         self.assertEqual(values, {
             "CS182_MODAL_IMAGE": "123456789012.dkr.ecr.us-east-1.amazonaws.com/cs182-cddr-runtime:dev-0000001",
-            "MODEL_URI": f"s3://cs182-cddr-123456789012-us-east-1-models/models/Qwen1.5-1.8B-Chat/{MODEL_REVISION}",
+            "MODEL_URI": f"s3://cs182-cddr-123456789012-us-east-1-models/models/Qwen-1_8B-Chat/{MODEL_REVISION}",
             "DATASET_URI": f"s3://cs182-cddr-123456789012-us-east-1-datasets/datasets/wildguardmix/{self.new_sha}",
             "OUTPUT_URI": "s3://cs182-cddr-123456789012-us-east-1-activations/runs",
             "ANALYSIS_URI": "s3://cs182-cddr-123456789012-us-east-1-analyses/runs",

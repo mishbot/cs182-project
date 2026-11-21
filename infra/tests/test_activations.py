@@ -199,28 +199,17 @@ class DatasetSeedingTest(unittest.TestCase):
 
 
 def tiny_qwen():
-    from tokenizers import Tokenizer
-    from tokenizers.models import WordLevel
-    from tokenizers.pre_tokenizers import Whitespace
     import torch
-    from transformers import PreTrainedTokenizerFast, Qwen2Config, Qwen2ForCausalLM
+    from transformers import AutoModelForCausalLM, GenerationConfig
+    from cs182_project._model_config import load_local_model_config
+    from cs182_project.qwen_model import load_tokenizer
 
+    fixtures = Path(__file__).parent/'fixtures'/'original_qwen'
     torch.manual_seed(0)
-    vocab = {"[PAD]": 0, "[EOS]": 1, "[UNK]": 2, "hello": 3, "world": 4, "user": 5, "assistant": 6, ":": 7}
-    for i in range(8, 2122):
-        vocab["I" if i == 40 else "As" if i == 2121 else f"token{i}"] = i
-    backend = Tokenizer(WordLevel(vocab, unk_token="[UNK]"))
-    backend.pre_tokenizer = Whitespace()
-    tokenizer = PreTrainedTokenizerFast(
-        tokenizer_object=backend, pad_token="[PAD]", eos_token="[EOS]", unk_token="[UNK]",
-        model_input_names=["input_ids", "attention_mask"],
-        chat_template="{% for message in messages %}{{ message['role'] + ': ' + message['content'] + ' ' }}{% endfor %}{% if add_generation_prompt %}assistant: {% endif %}",
-    )
-    model = Qwen2ForCausalLM(Qwen2Config(
-        vocab_size=len(vocab), hidden_size=16, intermediate_size=32,
-        num_hidden_layers=2, num_attention_heads=2, num_key_value_heads=2,
-        max_position_embeddings=128, pad_token_id=0, eos_token_id=1, sliding_window=None,
-    )).eval()
+    config = load_local_model_config(fixtures)
+    model = AutoModelForCausalLM.from_config(config, trust_remote_code=True).eval()
+    model.generation_config = GenerationConfig.from_pretrained(fixtures)
+    tokenizer = load_tokenizer(fixtures)
     return model, tokenizer
 
 
@@ -244,11 +233,11 @@ class ExtractionTest(unittest.TestCase):
         batch = self.tokenizer.pad([encoded for _, encoded in self.prepared], padding=True, return_tensors="pt")
         reference = {}
         handles = [
-            self.model.model.layers[1].register_forward_pre_hook(lambda _m, inputs: reference.update(first=inputs[0].detach().clone())),
-            self.model.model.norm.register_forward_pre_hook(lambda _m, inputs: reference.update(last=inputs[0].detach().clone())),
+            self.model.transformer.h[1].register_forward_pre_hook(lambda _m, inputs: reference.update(first=inputs[0].detach().clone())),
+            self.model.transformer.ln_f.register_forward_pre_hook(lambda _m, inputs: reference.update(last=inputs[0].detach().clone())),
         ]
         with torch.inference_mode():
-            normalized = self.model.model(**batch, use_cache=False).last_hidden_state
+            normalized = self.model.transformer(**batch, use_cache=False).last_hidden_state
         for handle in handles:
             handle.remove()
         for i, row in enumerate(together):
@@ -256,14 +245,14 @@ class ExtractionTest(unittest.TestCase):
             np.testing.assert_allclose(row["activations"][0], reference["first"][i, final].numpy(), atol=1e-6)
             np.testing.assert_allclose(row["activations"][1], reference["last"][i, final].numpy(), atol=1e-6)
             self.assertFalse(np.allclose(row["activations"][1], normalized[i, final].numpy()))
-        self.assertTrue(all(not layer._forward_hooks for layer in self.model.model.layers))
+        self.assertTrue(all(not layer._forward_hooks for layer in self.model.transformer.h))
 
     def test_forward_failure_cleans_hooks(self):
         batch = self.tokenizer.pad([encoded for _, encoded in self.prepared], padding=True, return_tensors="pt")
-        with patch.object(self.model.model, "forward", side_effect=RuntimeError("forward failed")):
+        with patch.object(self.model.transformer, "forward", side_effect=RuntimeError("forward failed")):
             with self.assertRaisesRegex(RuntimeError, "forward failed"):
-                collect.capture_batch(self.model.model, batch)
-        self.assertTrue(all(not layer._forward_hooks for layer in self.model.model.layers))
+                collect.capture_batch(self.model.transformer, batch)
+        self.assertTrue(all(not layer._forward_hooks for layer in self.model.transformer.h))
 
     def test_overlong_input_rejected_and_tokenizer_not_truncated(self):
         with self.assertRaisesRegex(ValueError, "Source row 0.*never truncated"):
@@ -312,12 +301,10 @@ class ExtractionTest(unittest.TestCase):
         s3 = MemoryS3()
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            self.model.config.use_sliding_window = False
-            self.model.config.sliding_window = 128
             self.model.save_pretrained(root / "source")
             self.tokenizer.save_pretrained(root / "source")
             files = {p.name: p.read_bytes() for p in (root / "source").iterdir() if p.is_file()}
-            s3.snapshot("artifacts", "model", files, model_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION)
+            s3.snapshot("artifacts", "model", files, model_id=artifacts.MODEL_ID, revision=artifacts.MODEL_REVISION, model_format="legacy_qwen")
             records = [
                 {"prompt": f"hello {'world ' * i}{label}", "prompt_harm_label": label, "adversarial": bool(i % 2)}
                 for label in ["harmful", "unharmful"] for i in range(6)
@@ -330,15 +317,13 @@ class ExtractionTest(unittest.TestCase):
                 dataset_s3_uri="s3://datasets/dataset", output_s3_uri="s3://activations/runs",
                 split="train", sample_size=5, seed=0, batch_size=2, max_input_tokens=64,
             )
-            with patch("transformers.AutoModelForCausalLM.from_pretrained") as load:
+            with patch("cs182_project.activations.load_model") as load:
                 with self.assertRaisesRegex(ValueError, "partition_dataset.py"):
                     collect.collect(s3, **vars(args))
                 load.assert_not_called()
             self.assertFalse(s3.uploads)
             partition_uri = partition.publish_partition(s3, "s3://datasets/dataset", cache_dir=root / "cache")
-            with patch("transformers.models.qwen2.modeling_qwen2.logger.warning_once") as warning:
-                uri = collect.collect(s3, **vars(args))
-            warning.assert_not_called()
+            uri = collect.collect(s3, **vars(args))
             manifest = json.loads(s3.objects[("activations", uri.split("activations/", 1)[1])])
             self.assertEqual(manifest["class_counts"], {"harmful": 3, "unharmful": 2})
             self.assertEqual(manifest["num_layers"], 2)
@@ -358,7 +343,7 @@ class ExtractionTest(unittest.TestCase):
             self.assertEqual(len(list((root / "cache").rglob("*.parquet"))), 2)
             uploads = len(s3.uploads)
             args.max_input_tokens = 2
-            with patch("transformers.AutoModelForCausalLM.from_pretrained") as load:
+            with patch("cs182_project.activations.load_model") as load:
                 with self.assertRaisesRegex(ValueError, "Source row"):
                     collect.collect(s3, **vars(args))
                 load.assert_not_called()
