@@ -247,6 +247,28 @@ read/list and analyses write/multipart-abort permissions. See [analysis details]
 for provisioning, retrieval, evaluation, and numerical exports. A100 runtime,
 S3 requests/storage, and applicable data transfer incur charges.
 
+## Full original-Qwen experiment
+
+```bash
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --sample-size 1000
+# Preview every command without running anything:
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --dry-run
+```
+
+The local wrapper invokes the existing Modal entrypoints in sequence: collect,
+analyze, orthogonalize using `diff_of_means_max_f1`, collect again, and analyze
+again. Both collections share the dataset, partition, sample size, seed, batch
+size, and input limit. Each downstream command receives the exact preceding
+result URI, so another concurrent run cannot change its inputs via a latest lookup.
+It streams logs, prints commands, prepares the discovered image, prompts with a
+bell if AWS login needs refreshing, and saves an incremental JSON URI summary.
+`--modal-profile` applies consistently to preparation and every job.
+
+The original-model ECR runtime must already be built and published. Optional
+`--seed-model` and `--partition-dataset` flags perform first-time input setup using
+the existing scripts. This wrapper does not build images or modify Git state.
+See its `--help` for sampling, fold, partition, and output options.
+
 ## Weight orthogonalization
 
 Remove a saved direction from all Qwen residual-stream writers and publish a

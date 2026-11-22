@@ -58,6 +58,30 @@ See [infra/README.md](infra/README.md) for the Qwen GPU development environment.
 Runtime images are built and tested in [AWS CodeBuild](infra/codebuild/README.md)
 from a clean, pushed GitHub commit; local Docker is not required for publishing.
 
+Run the original-Qwen before/after experiment with one wrapper:
+
+```bash
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --sample-size 1000
+```
+
+It discovers the configured inputs/image, prepares the Modal image, collects and
+analyzes the original model, orthogonalizes with its best-F1 mean difference,
+then collects and analyzes the edited model using the same sampling settings.
+It prints every command and streams logs. Expired AWS credentials trigger an
+interactive login prompt and a terminal bell. A JSON file under
+`reports/activations/` records each returned URI as the workflow progresses.
+Use `--dry-run` to preview commands without authentication, execution, or file writes;
+`--modal-profile mishbot` selects that Modal workspace for every step.
+
+Prerequisites: an ECR image built from the current original-Qwen implementation
+and the seeded WildGuardMix snapshot. Add `--seed-model` to seed the original
+ModelScope checkpoint on the first run only, and `--partition-dataset` to
+publish/verify the default partition. `--include-adversarial` enables both analysis
+groups; orthogonalization uses the non-adversarial difference of means. Use
+`--remote-login` if AWS browser sign-in must happen on another machine.
+The wrapper starts billable cloud jobs and stops on the first failure, retaining
+completed-step URIs and the printed command for manual recovery.
+
 For GPU analysis, run `uv run --locked --extra modal modal run infra/modal/analyze_activations.py`
 after rebuilding and preparing the ECR image. Results are exported to the analyses
 S3 bucket. Only non-adversarial samples are analyzed by default; add
