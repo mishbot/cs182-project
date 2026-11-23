@@ -1,13 +1,20 @@
 """Offline checks for the CodeBuild → exact-image Modal preparation handoff."""
 
 import contextlib
+import importlib.util
 import io
 import os
+from pathlib import Path
 import subprocess
 import unittest
 from unittest.mock import patch
 
-from infra.scripts import rebuild_modal_image as rebuild
+# CodeBuild mounts infra beside the installed library, outside sys.path.
+spec = importlib.util.spec_from_file_location(
+    "rebuild_modal_image_cli", Path(__file__).resolve().parents[1] / "scripts/rebuild_modal_image.py"
+)
+rebuild = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(rebuild)
 
 
 class RebuildModalImageTests(unittest.TestCase):

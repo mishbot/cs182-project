@@ -17,7 +17,7 @@ import subprocess
 import sys
 
 ROOT = Path(__file__).resolve().parents[2]
-ENVIRONMENT_KEYS = ("CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI")
+ENVIRONMENT_KEYS = ("CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI", "TRAINING_STATS_URI")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 
 
@@ -132,12 +132,12 @@ def main():
         if args.dry_run:
             values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
                       f"s3://DATASETS_BUCKET/datasets/{args.dataset}/REVISION", "s3://ACTIVATIONS_BUCKET/runs",
-                      "s3://ANALYSES_BUCKET/runs"]
+                      "s3://ANALYSES_BUCKET/runs", "s3://TRAINING_STATS_BUCKET/runs"]
         else:
             rows = [ANSI.sub("", line).strip().split("\t") for line in discovered.stdout.splitlines()]
             values = next((row for row in reversed(rows) if len(row) == len(ENVIRONMENT_KEYS)), None)
             if values is None:
-                raise RuntimeError("Environment discovery did not print its five configuration fields.")
+                raise RuntimeError("Environment discovery did not print its six configuration fields.")
         env.update(zip(ENVIRONMENT_KEYS, values))
         remember("original_model", env["MODEL_URI"])
         remember("dataset", env["DATASET_URI"])

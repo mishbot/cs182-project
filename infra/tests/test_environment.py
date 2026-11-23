@@ -5,7 +5,9 @@ import importlib.util
 import io
 import json
 from pathlib import Path
+import subprocess
 import sys
+import tempfile
 from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
@@ -19,6 +21,9 @@ INFRA = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location("discover_modal_cli", INFRA / "scripts" / "discover_modal.py")
 cli = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cli)
+spec = importlib.util.spec_from_file_location("qwen_experiment_cli", INFRA / "scripts" / "run_qwen_experiment.py")
+experiment = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(experiment)
 
 
 class DiscoveryTest(unittest.TestCase):
@@ -86,6 +91,7 @@ class DiscoveryTest(unittest.TestCase):
             "DATASET_URI": f"s3://cs182-cddr-123456789012-us-east-1-datasets/datasets/wildguardmix/{self.new_sha}",
             "OUTPUT_URI": "s3://cs182-cddr-123456789012-us-east-1-activations/runs",
             "ANALYSIS_URI": "s3://cs182-cddr-123456789012-us-east-1-analyses/runs",
+            "TRAINING_STATS_URI": "s3://cs182-cddr-123456789012-us-east-1-training-stats/runs",
         })
         self.s3.get_paginator.assert_called_once_with("list_objects_v2")
         self.ecr.get_paginator.assert_called_once_with("describe_images")
@@ -134,13 +140,13 @@ class DiscoveryTest(unittest.TestCase):
         self.session.client.assert_not_called()
 
     def test_cli_formats_values_and_does_not_print_partial_configuration_on_error(self):
-        expected = dict(CS182_MODAL_IMAGE="image:tag", MODEL_URI="model", DATASET_URI="dataset", OUTPUT_URI="output", ANALYSIS_URI="analyses")
+        expected = dict(CS182_MODAL_IMAGE="image:tag", MODEL_URI="model", DATASET_URI="dataset", OUTPUT_URI="output", ANALYSIS_URI="analyses", TRAINING_STATS_URI="stats")
         with patch.dict(sys.modules, {"boto3": SimpleNamespace(Session=lambda: self.session)}), \
                 patch.object(sys, "argv", ["discover", "--project", "custom"]), \
                 patch.object(cli, "discover_modal_environment", return_value=expected) as discover, \
                 patch("sys.stdout", new_callable=io.StringIO) as stdout:
             self.assertEqual(cli.main(), 0)
-        self.assertEqual(stdout.getvalue(), "image:tag\tmodel\tdataset\toutput\tanalyses\n")
+        self.assertEqual(stdout.getvalue(), "image:tag\tmodel\tdataset\toutput\tanalyses\tstats\n")
         discover.assert_called_once_with(self.session, project="custom", region=None, dataset="refusal-direction")
         with patch.dict(sys.modules, {"boto3": SimpleNamespace(Session=lambda: self.session)}), \
                 patch.object(sys, "argv", ["discover"]), \
@@ -150,6 +156,24 @@ class DiscoveryTest(unittest.TestCase):
             self.assertEqual(cli.main(), 1)
         self.assertEqual(stdout.getvalue(), "")
         self.assertIn("AccessDenied", stderr.getvalue())
+
+    def test_experiment_accepts_all_six_discovery_fields(self):
+        commands = []
+
+        def execute(command, *, env, **kwargs):
+            commands.append((command, dict(env)))
+            output = "image:tag\tmodel\tdataset\toutput\tanalyses\tstats\n" if "infra/scripts/discover_modal.py" in command else ""
+            return subprocess.CompletedProcess(command, 0, stdout=output)
+
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(sys, "argv", ["experiment", "--results-file", str(Path(directory) / "results.json")]), \
+                patch.object(experiment, "execute", side_effect=execute), \
+                patch.object(experiment, "result_uri", side_effect=lambda result, **kwargs: kwargs["placeholder"]), \
+                patch("sys.stdout", new_callable=io.StringIO):
+            self.assertEqual(experiment.main(), 0)
+        preparation = next(env for command, env in commands if "infra.modal.prepare_image" in command)
+        self.assertEqual(preparation["CS182_MODAL_IMAGE"], "image:tag")
+        self.assertEqual(preparation["TRAINING_STATS_URI"], "stats")
 
 
 if __name__ == "__main__":
