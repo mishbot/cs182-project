@@ -276,6 +276,15 @@ It streams logs, prints commands, prepares the discovered image, prompts with a
 bell if AWS login needs refreshing, and saves an incremental JSON URI summary.
 `--modal-profile` applies consistently to preparation and every job.
 
+The wrapper uses `modal run --detach` and sets `CS182_MODAL_DETACH=1` so the
+entrypoints' nested worker apps are detached too. It still waits for each job's
+result before starting the next stage. An already submitted worker can finish
+if the workstation sleeps or disconnects, but subsequent stages require the
+local wrapper to run. Reconnection and automatic recovery of a lost result are
+not guaranteed; completed artifacts remain in S3. Stopping the local wrapper
+does not cancel detached remote work; stop its app in the Modal dashboard when
+cancellation is intended.
+
 The original-model ECR runtime must already be built and published. Optional
 `--seed-model` and `--partition-dataset` flags perform first-time input setup using
 the existing scripts. This wrapper does not build images or modify Git state.

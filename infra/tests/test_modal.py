@@ -27,7 +27,7 @@ cache_module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(cache_module)
 MODAL_AVAILABLE = importlib.util.find_spec("modal") is not None
 if MODAL_AVAILABLE:
-    from infra.modal import _runner as runner, collect_activations, infer, analyze_activations
+    from infra.modal import _runner as runner, collect_activations, infer, analyze_activations, seed_model
 
 
 @unittest.skipUnless(MODAL_AVAILABLE, "Install the modal extra")
@@ -53,7 +53,7 @@ class ModalAnalysisTest(unittest.TestCase):
         worker = MagicMock()
         app.function.return_value.return_value = worker
         credentials = {"AWS_REGION": "us-east-1"}
-        with patch.dict(os.environ, {"CS182_MODAL_IMAGE": "image", "ANALYSIS_URI": "s3://analyses/runs"}), \
+        with patch.dict(os.environ, {"CS182_MODAL_IMAGE": "image", "ANALYSIS_URI": "s3://analyses/runs", "CS182_MODAL_DETACH": "1"}), \
                 patch.object(analyze_activations, "runtime_image", return_value="prepared") as image, \
                 patch.object(analyze_activations, "aws_environment", return_value=credentials), \
                 patch.object(analyze_activations.modal, "App", return_value=app), \
@@ -67,6 +67,28 @@ class ModalAnalysisTest(unittest.TestCase):
         self.assertEqual(app.function.call_args.kwargs['gpu'], 'A100-40GB')
         self.assertEqual(app.function.call_args.kwargs['memory'], 32768)
         self.assertNotIn('volumes', app.function.call_args.kwargs)
+        app.run.assert_called_once_with(detach=True)
+
+    def test_seed_worker_propagates_detach_and_waits_for_result(self):
+        app, worker = MagicMock(), MagicMock()
+        app.function.return_value.return_value = worker
+        app.run.return_value = nullcontext()
+        worker.remote.return_value = "s3://models/snapshot"
+        for detached in ("0", "1"):
+            app.run.reset_mock()
+            worker.remote.reset_mock()
+            with self.subTest(detached=detached), \
+                    patch.dict(os.environ, {"CS182_MODAL_DETACH": detached}), \
+                    patch("boto3.Session"), \
+                    patch.object(seed_model, "aws_environment", return_value={}), \
+                    patch.object(seed_model.modal, "App", return_value=app), \
+                    patch.object(seed_model.modal.Secret, "from_dict"), \
+                    patch.object(seed_model.modal, "enable_output", return_value=nullcontext()), \
+                    patch("sys.stdout", new_callable=io.StringIO) as stdout:
+                seed_model.main(bucket="models")
+            app.run.assert_called_once_with(detach=detached == "1")
+            worker.remote.assert_called_once()
+            self.assertEqual(stdout.getvalue(), "s3://models/snapshot\n")
 
     def test_worker_uses_isolated_python_and_streams_logs(self):
         with patch('subprocess.run') as run:
@@ -300,7 +322,7 @@ class ModalAdapterTest(unittest.TestCase):
                 app.run.return_value = nullcontext()
                 worker.remote.return_value = "response"
                 options = {"device": device}
-                with patch.dict(os.environ, {"CS182_MODAL_IMAGE": self.image}), \
+                with patch.dict(os.environ, {"CS182_MODAL_IMAGE": self.image, "CS182_MODAL_DETACH": "1"}), \
                         patch("boto3.Session", return_value=self.session()), \
                         patch.object(runner, "runtime_image", return_value="image"), \
                         patch.object(runner.modal, "App", return_value=app), \
@@ -315,6 +337,7 @@ class ModalAdapterTest(unittest.TestCase):
                 self.assertEqual(config["retries"], 0)
                 self.assertFalse(config["include_source"])
                 worker.remote.assert_called_once_with("infer", options)
+                app.run.assert_called_once_with(detach=True)
         with patch.dict(os.environ, {}, clear=True):
             with self.assertRaisesRegex(ValueError, "CS182_MODAL_IMAGE"):
                 runner.run_task("infer", {"device": "auto"})

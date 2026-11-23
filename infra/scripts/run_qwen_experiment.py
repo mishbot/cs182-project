@@ -83,7 +83,7 @@ def main():
 
     env = dict(os.environ)
     env.setdefault("AWS_PROFILE", "cs182-tools")
-    env.update(AWS_REGION=args.region, AWS_DEFAULT_REGION=args.region)
+    env.update(AWS_REGION=args.region, AWS_DEFAULT_REGION=args.region, CS182_MODAL_DETACH="1")
     if args.modal_profile:
         env["MODAL_PROFILE"] = args.modal_profile
     run = partial(execute, env=env, dry_run=args.dry_run)
@@ -127,7 +127,7 @@ def main():
             run(["aws", "sts", "get-caller-identity"])
 
         if args.seed_model:
-            run([*uv, "modal", "run", "infra/modal/seed_model.py", *scope])
+            run([*uv, "modal", "run", "--detach", "infra/modal/seed_model.py", *scope])
         discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset])
         if args.dry_run:
             values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
@@ -151,7 +151,7 @@ def main():
 
         def collect(model, label):
             print(f"\n=== Collect {label} activations ===", flush=True)
-            command = [*uv, "modal", "run", "infra/modal/collect_activations.py",
+            command = [*uv, "modal", "run", "--detach", "infra/modal/collect_activations.py",
                        "--model-s3-uri", model, "--dataset-s3-uri", env["DATASET_URI"],
                        "--output-s3-uri", env["OUTPUT_URI"], "--split", "train",
                        "--sample-size", str(args.sample_size), "--seed", str(args.seed),
@@ -164,7 +164,7 @@ def main():
 
         def analyze(activations, label):
             print(f"\n=== Analyze {label} activations ===", flush=True)
-            command = [*uv, "modal", "run", "infra/modal/analyze_activations.py",
+            command = [*uv, "modal", "run", "--detach", "infra/modal/analyze_activations.py",
                        "--run-s3-uri", activations, "--output-s3-uri", env["ANALYSIS_URI"],
                        "--folds", str(args.folds), "--seed", str(args.seed), *scope]
             if args.include_adversarial:
@@ -176,7 +176,7 @@ def main():
         original_activations = collect(env["MODEL_URI"], "original")
         original_report = analyze(original_activations, "original")
         print("\n=== Orthogonalize using non-adversarial difference of means at best F1 ===", flush=True)
-        edited = result_uri(run([*uv, "modal", "run", "infra/modal/orthogonalize_model.py",
+        edited = result_uri(run([*uv, "modal", "run", "--detach", "infra/modal/orthogonalize_model.py",
                                  "--model-s3-uri", env["MODEL_URI"], "--analysis-s3-uri", original_report.rsplit("/", 1)[0],
                                  "--rhat", "diff_of_means_max_f1", *scope]),
                             dry_run=args.dry_run, placeholder="s3://MODELS_BUCKET/models/ORTHOGONALIZED_MODEL")

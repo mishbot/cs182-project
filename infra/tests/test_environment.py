@@ -166,7 +166,7 @@ class DiscoveryTest(unittest.TestCase):
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         with tempfile.TemporaryDirectory() as directory, \
-                patch.object(sys, "argv", ["experiment", "--results-file", str(Path(directory) / "results.json")]), \
+                patch.object(sys, "argv", ["experiment", "--seed-model", "--results-file", str(Path(directory) / "results.json")]), \
                 patch.object(experiment, "execute", side_effect=execute), \
                 patch.object(experiment, "result_uri", side_effect=lambda result, **kwargs: kwargs["placeholder"]), \
                 patch("sys.stdout", new_callable=io.StringIO):
@@ -174,6 +174,12 @@ class DiscoveryTest(unittest.TestCase):
         preparation = next(env for command, env in commands if "infra.modal.prepare_image" in command)
         self.assertEqual(preparation["CS182_MODAL_IMAGE"], "image:tag")
         self.assertEqual(preparation["TRAINING_STATS_URI"], "stats")
+        modal_runs = [(command, env) for command, env in commands
+                      if any(command[i:i + 2] == ["modal", "run"] for i in range(len(command) - 1))]
+        self.assertEqual(len(modal_runs), 6)
+        for command, env in modal_runs:
+            self.assertIn(["modal", "run", "--detach"], [command[i:i + 3] for i in range(len(command) - 2)])
+            self.assertEqual(env["CS182_MODAL_DETACH"], "1")
 
 
 if __name__ == "__main__":

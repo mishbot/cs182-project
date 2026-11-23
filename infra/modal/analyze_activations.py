@@ -38,5 +38,5 @@ def main(run_s3_uri: str = "", activation_root_s3_uri: str = "", output_s3_uri: 
     worker = worker_app.function(image=image, secrets=[modal.Secret.from_dict(credentials)],
                                 gpu=gpu, cpu=4, memory=memory, timeout=timeout, retries=0,
                                 serialized=True, include_source=False)(execute_analysis)
-    with modal.enable_output(), worker_app.run():
+    with modal.enable_output(), worker_app.run(detach=os.environ.get("CS182_MODAL_DETACH") == "1"):
         worker.remote(options)

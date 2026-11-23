@@ -194,7 +194,8 @@ def run_task(task, options, *, gpu="T4", timeout=3600):
     )(execute_task)
     # The outer `modal run` entrypoint supplies output for this nested worker App.
     try:
-        with modal.enable_output(), worker_app.run():
+        # CLI --detach applies to the outer app, so propagate it to this worker.
+        with modal.enable_output(), worker_app.run(detach=os.environ.get("CS182_MODAL_DETACH") == "1"):
             return worker.remote(task, options)
     except modal.exception.NotFoundError as error:
         raise RuntimeError(

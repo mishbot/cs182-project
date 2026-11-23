@@ -33,5 +33,5 @@ def main(bucket: str = '', revision: str = MODEL_REVISION, prefix: str = '',
     worker = worker_app.function(image=image, secrets=[modal.Secret.from_dict(aws_environment(session))],
                                 cpu=2, memory=2048, timeout=timeout,
                                 retries=0, serialized=True, include_source=False)(execute_seed)
-    with modal.enable_output(), worker_app.run():
+    with modal.enable_output(), worker_app.run(detach=os.environ.get("CS182_MODAL_DETACH") == "1"):
         print(worker.remote(destination, revision, prefix))
