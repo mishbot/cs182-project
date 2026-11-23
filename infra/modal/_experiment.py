@@ -166,7 +166,9 @@ def validate_result(s3, request, uri):
             raise ValueError(f"Upstream manifest changed: {source}")
     if task == "collect_activations":
         value, _ = activation(s3, uri)
-        for key in ("sample_size", "seed", "batch_size", "max_input_tokens", "device"):
+        # Device is execution metadata, not an output compatibility constraint.
+        # In particular, the collector resolves requested "auto" to cpu/cuda.
+        for key in ("sample_size", "seed", "batch_size", "max_input_tokens"):
             if value.get(key) != options[key]:
                 raise ValueError(f"Activation {key} differs from this experiment")
         for kind in ("model", "dataset"):

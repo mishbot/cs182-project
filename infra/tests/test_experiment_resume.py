@@ -182,7 +182,7 @@ class ArtifactValidationTest(unittest.TestCase):
             self.inputs[uri] = state.document(self.s3, uri)[1]
         self.manifest = dict(schema_version=2, status="complete", run_id="run", row_count=10,
                              num_layers=2, hidden_size=8, sample_size=10, seed=0, batch_size=4,
-                             max_input_tokens=2048, device="auto",
+                             max_input_tokens=2048, device="cuda",
                              model=dict(s3_uri=self.options["model_s3_uri"],
                                         manifest_sha256=self.inputs["s3://models/model/artifact-manifest.json"]),
                              dataset=dict(s3_uri=self.options["dataset_s3_uri"], split="train",
@@ -214,6 +214,17 @@ class ArtifactValidationTest(unittest.TestCase):
         self.s3.objects.pop(("activations", "runs/run/part-00000.parquet"))
         with self.assertRaises(self.s3.exceptions.NoSuchKey):
             self.validate()
+
+    def test_device_metadata_does_not_restrict_result_reuse_or_receipt_creation(self):
+        for requested, recorded in [("auto", "cuda"), ("auto", "cpu"), ("cuda", "cpu"), ("cpu", "cuda")]:
+            with self.subTest(requested=requested, recorded=recorded):
+                self.options["device"] = requested
+                self.manifest["device"] = recorded
+                self.assertEqual(self.validate(), self.uri)
+                receipt = state.completion_record(self.s3, self.request, self.uri)
+                self.assertEqual(state.completed_result(self.s3, self.request, receipt), self.uri)
+        self.manifest.pop("device")
+        self.assertEqual(self.validate(), self.uri)
 
     def test_wrong_size_and_changed_upstream_manifests_are_rejected(self):
         self.s3.objects["activations", "runs/run/part-00000.parquet"] = b"broken shard"
