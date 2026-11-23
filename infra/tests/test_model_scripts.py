@@ -206,7 +206,7 @@ class GenerationTest(unittest.TestCase):
         self.inputs.__getitem__.return_value.shape = [1, 3]
         self.tokenizer.return_value = self.inputs
         self.transformers = types.SimpleNamespace(
-            AutoConfig=MagicMock(), AutoTokenizer=MagicMock(), AutoModelForCausalLM=MagicMock(),
+            AutoConfig=MagicMock(), AutoTokenizer=MagicMock(), AutoModelForCausalLM=MagicMock(), GenerationConfig=MagicMock(),
         )
         self.transformers.AutoConfig.from_pretrained.return_value = self.model.config
         self.transformers.AutoTokenizer.from_pretrained.return_value = self.tokenizer

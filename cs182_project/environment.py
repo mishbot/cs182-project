@@ -8,7 +8,7 @@ import re
 from typing import TYPE_CHECKING
 
 from ._types import JsonObject
-from .dataset_artifacts import validate_dataset_manifest
+from .dataset_artifacts import CORPUS_ID, CORPUS_NAME, DATASET_ID, validate_dataset_manifest
 from .model_artifacts import MANIFEST, MODEL_ID, MODEL_NAME, MODEL_REVISION, validate_manifest
 
 if TYPE_CHECKING:
@@ -27,12 +27,15 @@ def _read_manifest(s3: S3Client, bucket: str, key: str) -> JsonObject:
         response["Body"].close()
 
 
-def _latest_dataset(s3: S3Client, bucket: str) -> str:
+def _latest_dataset(s3: S3Client, bucket: str, dataset: str = "refusal-direction") -> str:
     """Select by completion-marker publication time, never by SHA ordering."""
-    pattern = re.compile(rf"datasets/wildguardmix/([0-9a-f]{{40}})/{re.escape(MANIFEST)}")
+    if dataset not in {CORPUS_NAME, "wildguardmix"}:
+        raise ValueError("Dataset must be refusal-direction or wildguardmix.")
+    size = 40 if dataset == "wildguardmix" else 64
+    pattern = re.compile(rf"datasets/{dataset}/([0-9a-f]{{{size}}})/{re.escape(MANIFEST)}")
     candidates: list[tuple[datetime, str]] = []
     for page in s3.get_paginator("list_objects_v2").paginate(
-        Bucket=bucket, Prefix="datasets/wildguardmix/"
+        Bucket=bucket, Prefix=f"datasets/{dataset}/"
     ):
         for entry in page.get("Contents", []):
             key = entry.get("Key", "")
@@ -43,17 +46,21 @@ def _latest_dataset(s3: S3Client, bucket: str) -> str:
                 candidates.append((modified, key))
     if not candidates:
         raise ValueError(
-            f"No completed WildGuardMix snapshots found in s3://{bucket}/datasets/wildguardmix/."
+            f"No completed {dataset} snapshots found in s3://{bucket}/datasets/{dataset}/. "
+            "Run infra/scripts/seed_dataset.py with the selected --dataset first."
         )
     _, latest = max(candidates)
     manifest = _read_manifest(s3, bucket, latest)
     validate_dataset_manifest(manifest)
+    expected_id = DATASET_ID if dataset == "wildguardmix" else CORPUS_ID
+    if manifest["dataset_id"] != expected_id:
+        raise ValueError("Dataset identity differs from the selected corpus.")
     match = pattern.fullmatch(latest)
     assert match is not None  # Candidates were filtered with this same pattern.
     revision = match[1]
     if manifest["revision"] != revision:
         raise ValueError("The newest dataset manifest's revision does not match its S3 prefix.")
-    return f"s3://{bucket}/datasets/wildguardmix/{revision}"
+    return f"s3://{bucket}/datasets/{dataset}/{revision}"
 
 
 def _latest_image(ecr: ECRClient, repository: str) -> str:
@@ -90,6 +97,7 @@ def discover_modal_environment(
     *,
     project: str = "cs182-cddr",
     region: str | None = None,
+    dataset: str = "refusal-direction",
 ) -> dict[str, str]:
     """Resolve five shell variables without requiring local OpenTofu state.
 
@@ -112,7 +120,16 @@ def discover_modal_environment(
     s3 = session.client("s3", region_name=region)
     ecr = session.client("ecr", region_name=region)
     model_prefix = f"models/{MODEL_NAME}/{MODEL_REVISION}"
-    model = _read_manifest(s3, f"{prefix}-models", f"{model_prefix}/{MANIFEST}")
+    model_bucket = f"{prefix}-models"
+    model_key = f"{model_prefix}/{MANIFEST}"
+    try:
+        model = _read_manifest(s3, model_bucket, model_key)
+    except s3.exceptions.NoSuchKey as error:
+        raise ValueError(
+            f"The pinned original Qwen model is not seeded: s3://{model_bucket}/{model_key}. "
+            "Run infra/scripts/run_qwen_experiment.py with --seed-model to seed it on Modal "
+            "before discovery, or run infra/modal/seed_model.py separately."
+        ) from error
     validate_manifest(model)
     if (
         model.get("model_id") != MODEL_ID
@@ -125,7 +142,7 @@ def discover_modal_environment(
     return {
         "CS182_MODAL_IMAGE": _latest_image(ecr, f"{project}-runtime"),
         "MODEL_URI": f"s3://{prefix}-models/{model_prefix}",
-        "DATASET_URI": _latest_dataset(s3, f"{prefix}-datasets"),
+        "DATASET_URI": _latest_dataset(s3, f"{prefix}-datasets", dataset),
         "OUTPUT_URI": f"s3://{prefix}-activations/runs",
         "ANALYSIS_URI": f"s3://{prefix}-analyses/runs",
     }

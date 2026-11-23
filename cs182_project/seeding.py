@@ -143,8 +143,20 @@ def seed_dataset(
     revision: str = "main",
     cache_dir: PathInput = ".cache/huggingface",
     hub: DatasetHub | None = None,
+    *,
+    dataset: str = "refusal-direction",
 ) -> str:
-    """Resolve once, preserve upstream files, and publish the completion marker last."""
+    """Seed the default processed corpus, or explicitly archive WildGuardMix."""
+    if dataset == "refusal-direction":
+        from .processed_datasets import seed_corpus
+
+        if revision != "main" or hub is not None:
+            raise ValueError(
+                "--revision/Hugging Face overrides apply only to --dataset wildguardmix."
+            )
+        return seed_corpus(s3, bucket, cache_dir)
+    if dataset != "wildguardmix":
+        raise ValueError("Dataset must be refusal-direction or wildguardmix.")
     from botocore.exceptions import ClientError
 
     if hub is None:

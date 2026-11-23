@@ -173,7 +173,7 @@ class DatasetSeedingTest(unittest.TestCase):
             fixture.write_text("fixture source")
             hub = SimpleNamespace(HfApi=MagicMock(), hf_hub_download=MagicMock(return_value=str(fixture)))
             hub.HfApi.return_value.dataset_info.return_value.sha = "a" * 40
-            uri = seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
+            uri = seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub, dataset="wildguardmix")
             self.assertEqual(uri, f"s3://datasets/datasets/wildguardmix/{'a' * 40}")
             self.assertEqual(len(s3.uploads), 4)
             self.assertTrue(s3.uploads[-1][1].endswith(artifacts.MANIFEST))
@@ -182,7 +182,7 @@ class DatasetSeedingTest(unittest.TestCase):
             manifest = json.loads(s3.objects[s3.uploads[-1]])
             self.assertEqual(manifest["attribution"]["source"], dataset.DATASET_URL)
             with self.assertRaisesRegex(ValueError, "already published"):
-                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
+                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub, dataset="wildguardmix")
             self.assertEqual(hub.hf_hub_download.call_count, 3)
 
     def test_failed_seed_never_publishes_completion(self):
@@ -194,7 +194,7 @@ class DatasetSeedingTest(unittest.TestCase):
             hub = SimpleNamespace(HfApi=MagicMock(), hf_hub_download=MagicMock(return_value=str(fixture)))
             hub.HfApi.return_value.dataset_info.return_value.sha = "a" * 40
             with self.assertRaisesRegex(OSError, "interrupted"):
-                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub)
+                seed_dataset.seed_dataset(s3, "datasets", "main", directory, hub, dataset="wildguardmix")
         self.assertFalse(any(key.endswith(artifacts.MANIFEST) for _, key in s3.objects))
 
 

@@ -1,0 +1,17 @@
+Dataset definitions and preprocessing adaptations
+
+Source: andyrdt/refusal_direction, dataset/generate_datasets.ipynb
+Revision: 9d852fae1a9121c78b29142de733cb1340770cc3
+https://github.com/andyrdt/refusal_direction/blob/9d852fae1a9121c78b29142de733cb1340770cc3/dataset/generate_datasets.ipynb
+Authors: Andy Arditi and the refusal_direction contributors
+Upstream code license: Apache License 2.0 (see LICENSE).
+
+The source-to-instruction definitions for AdvBench, MaliciousInstruct,
+TDC2023, and Alpaca were adapted for this project. Modified behavior includes
+three-column Parquet output, inferred harmful/unharmful labels,
+non-adversarial flags, immutable S3 snapshots, project-specific 80/20
+membership, and pooled balanced sampling. We do not reproduce the upstream
+128-example cap or paper-specific train/validation/test dataset construction.
+
+Source datasets retain the terms and attribution of their original publishers.
+The upstream code license is not a blanket license for the source datasets.

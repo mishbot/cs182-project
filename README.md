@@ -74,10 +74,11 @@ Use `--dry-run` to preview commands without authentication, execution, or file w
 `--modal-profile mishbot` selects that Modal workspace for every step.
 
 Prerequisites: an ECR image built from the current original-Qwen implementation
-and the seeded WildGuardMix snapshot. Add `--seed-model` to seed the original
+and the seeded [refusal-direction corpus](infra/datasets.md). Add `--seed-model` to seed the original
 ModelScope checkpoint on the first run only, and `--partition-dataset` to
 publish/verify the default partition. `--include-adversarial` enables both analysis
-groups; orthogonalization uses the non-adversarial difference of means. Use
+groups for `--dataset wildguardmix`; the default corpus has no adversarial group.
+Orthogonalization uses the non-adversarial difference of means. Use
 `--remote-login` if AWS browser sign-in must happen on another machine.
 The wrapper starts billable cloud jobs and stops on the first failure, retaining
 completed-step URIs and the printed command for manual recovery.
@@ -92,8 +93,12 @@ For CPU analysis of saved activations, install `--extra analysis` and run
 See [activation analysis](infra/analysis.md) for cross-validation, Plotly reports,
 numerical outputs, and EC2 use. Reports analyze enabled adversarial and non-adversarial
 samples separately and include refusal metrics and direction comparisons.
-Before collection, publish the default 80/20 WildGuardMix row partition with
-`uv run --locked --extra seed python infra/scripts/partition_dataset.py --dataset-s3-uri "$DATASET_URI"`.
+Seed the default AdvBench/MaliciousInstruct/TDC2023/Alpaca corpus locally with
+`uv run --locked --extra seed python infra/scripts/seed_dataset.py --bucket "$DATASET_BUCKET"`.
+The corpus contains four Parquets with only `prompt`, `prompt_harm_label`, and
+`adversarial`; the seeder also publishes 80/20 membership. See
+[dataset definitions, attribution, and collection](infra/datasets.md).
+WildGuardMix is available explicitly with `--dataset wildguardmix`.
 Collection defaults to the training partition; existing activation runs need
 recollection to include next-token probabilities.
 

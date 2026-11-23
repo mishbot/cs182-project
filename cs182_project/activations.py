@@ -29,7 +29,7 @@ from ._types import (
     Shard,
     TensorBatch,
 )
-from .dataset_artifacts import download_dataset
+from .dataset_artifacts import CORPUS_ID, download_dataset, read_prompt_rows
 from .dataset_partition import load_partition, partition_uri
 from .model_artifacts import MANIFEST, download_model, parse_s3_uri, sha256
 from .qwen_model import (
@@ -67,7 +67,7 @@ def sample_prompts(
 ) -> list[PromptRow]:
     """Deduplicate exact strings, drop ambiguous groups, and balance without replacement."""
     if sample_size < 4:
-        raise ValueError("--sample-size must be at least 4 to sample all four groups")
+        raise ValueError("--sample-size must be at least 4")
     prompts: dict[str, PromptGroup] = {}
     for index, row in enumerate(rows):
         prompt, label = row.get("prompt"), row.get("prompt_harm_label")
@@ -87,7 +87,12 @@ def sample_prompts(
             }
         prompts[prompt]["labels"].add(cast(HarmLabel, label))
         prompts[prompt]["adversarial_values"].add(cast(bool, row["adversarial"]))
-    keys = [(label, adv) for adv in (False, True) for label in ("harmful", "unharmful")]
+    adversarial_groups = (
+        (False, True)
+        if any(item["adversarial_values"] == {True} for item in prompts.values())
+        else (False,)
+    )
+    keys = [(label, adv) for adv in adversarial_groups for label in ("harmful", "unharmful")]
     groups: dict[tuple[str, bool], list[PromptRow]] = {key: [] for key in keys}
     for item in prompts.values():
         if len(item["labels"]) == len(item["adversarial_values"]) == 1 and (
@@ -107,7 +112,7 @@ def sample_prompts(
     rng = random.Random(seed)
     selected: list[PromptRow] = []
     for position, key in enumerate(keys):
-        count = sample_size // 4 + (position < sample_size % 4)
+        count = sample_size // len(keys) + (position < sample_size % len(keys))
         if count > len(groups[key]):
             raise ValueError(
                 f"Need {count} unique {key} prompts, but only {len(groups[key])} are eligible."
@@ -372,7 +377,6 @@ def collect(
         raise ValueError("device must be auto, cpu, or cuda")
     for uri in [model_s3_uri, dataset_s3_uri, output_s3_uri]:
         parse_s3_uri(uri)
-    import pyarrow.parquet as pq
     import torch
 
     device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
@@ -383,11 +387,7 @@ def collect(
     cache = Path(cache_dir).expanduser()
     dataset_dir = download_dataset(s3, dataset_s3_uri, cache / "datasets")
     dataset_manifest = json.loads((dataset_dir / MANIFEST).read_text())
-    source_split = "test" if split == "test" else "train"
-    dataset_path = dataset_dir / dataset_manifest["splits"][source_split]
-    rows = pq.read_table(
-        dataset_path, columns=["prompt", "prompt_harm_label", "adversarial"]
-    ).to_pylist()
+    rows = read_prompt_rows(dataset_dir, dataset_manifest, split)
     membership = None
     partition: dict[str, object] = {}
     if split != "test":
@@ -443,7 +443,11 @@ def collect(
             "use_flash_attn": False,
             "use_cache_quantization": False,
         },
-        "sampling": "balanced_harmfulness_x_adversarial_unique_exact_prompts_without_ambiguous_labels",
+        "sampling": (
+            "balanced_harmful_harmless_pooled_sources_unique_exact_prompts_without_ambiguous_labels"
+            if dataset_manifest["dataset_id"] == CORPUS_ID
+            else "balanced_harmfulness_x_adversarial_unique_exact_prompts_without_ambiguous_labels"
+        ),
         "selected_source_row_indices": [row["source_row_index"] for row in selected],
         "class_counts": {
             label: sum(row["prompt_harm_label"] == label for row in selected) for label in labels

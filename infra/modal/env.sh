@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # Source after aws-login.sh to select the latest published inputs and runtime.
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
-  echo 'Use: source infra/modal/env.sh [--project PROJECT] [--region REGION]' >&2
+  echo 'Use: source infra/modal/env.sh [--project PROJECT] [--region REGION] [--dataset refusal-direction|wildguardmix]' >&2
   exit 2
 fi
 
 _cs182_modal_env() {
   local root discovered image model dataset output analysis extra
   if [[ ${1-} == --help || ${1-} == -h ]]; then
-    echo 'Use: source infra/modal/env.sh [--project PROJECT] [--region REGION]'
+    echo 'Use: source infra/modal/env.sh [--project PROJECT] [--region REGION] [--dataset refusal-direction|wildguardmix]'
     echo 'Defaults: CS182_PROJECT or cs182-cddr; region and credentials from your AWS session.'
     return 0
   fi

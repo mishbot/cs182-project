@@ -2,7 +2,7 @@
 """Run original-Qwen collection → analysis → mean-difference orthogonalization → collection → analysis.
 
 Requires a published ECR runtime built from the original-Qwen code and a seeded
-WildGuardMix snapshot. Use --seed-model and --partition-dataset for first-time setup.
+refusal-direction corpus. Use --seed-model and --partition-dataset for first-time setup.
 """
 
 import argparse
@@ -54,6 +54,7 @@ def result_uri(result, *, dry_run, placeholder, suffix=None):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser.add_argument("--dataset", choices=["refusal-direction", "wildguardmix"], default="refusal-direction")
     parser.add_argument("--sample-size", type=int, default=1000)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=4)
@@ -70,8 +71,11 @@ def main():
     parser.add_argument("--results-file", type=Path, help="Incremental URI summary; defaults to reports/activations/experiment-TIMESTAMP.json")
     parser.add_argument("--dry-run", action="store_true", help="Print commands with placeholder URIs; execute nothing")
     args = parser.parse_args()
-    if args.folds < 2 or args.sample_size < 4 * args.folds:
-        parser.error("Use --folds >= 2 and --sample-size >= 4 * --folds for balanced analysis")
+    classes = 4 if args.dataset == "wildguardmix" else 2
+    if args.folds < 2 or args.sample_size < classes * args.folds:
+        parser.error(f"Use --folds >= 2 and --sample-size >= {classes} * --folds for balanced analysis")
+    if args.include_adversarial and args.dataset == "refusal-direction":
+        parser.error("The refusal-direction corpus has no adversarial group; omit --include-adversarial")
     if args.seed < 0 or args.batch_size < 1 or args.max_input_tokens < 1:
         parser.error("Seed must be nonnegative; batch size and token limit must be positive")
     if args.partition_dataset and args.partition_s3_uri:
@@ -91,7 +95,7 @@ def main():
         results_path = ROOT / results_path
     results = {"sample_size": args.sample_size, "sampling_seed": args.seed, "folds": args.folds,
                "batch_size": args.batch_size, "max_input_tokens": args.max_input_tokens,
-               "project": args.project, "region": args.region, "modal_profile": env.get("MODAL_PROFILE"),
+               "project": args.project, "region": args.region, "dataset_selection": args.dataset, "modal_profile": env.get("MODAL_PROFILE"),
                "include_adversarial": args.include_adversarial, "rhat": "diff_of_means_max_f1"}
 
     def remember(key, value):
@@ -108,8 +112,13 @@ def main():
             if not sys.stdin.isatty():
                 raise RuntimeError("AWS authentication failed. Run source infra/scripts/aws-login.sh in a terminal, then rerun.")
             input("\aAWS login is needed. Press Enter to run the login helper, or Ctrl+C to stop: ")
-            shell = 'source "$1"' + (' --remote' if args.remote_login else '')
-            run(["bash", "-c", shell, "qwen-experiment-login", str(ROOT / "infra/scripts/aws-login.sh")], interactive=True)
+            # Remove the script path from Bash's positional parameters before
+            # sourcing: with no explicit arguments, `source` inherits "$@".
+            shell = 'login_script=$1; shift; source "$login_script" "$@"'
+            command = ["bash", "-c", shell, "qwen-experiment-login", str(ROOT / "infra/scripts/aws-login.sh")]
+            if args.remote_login:
+                command.append("--remote")
+            run(command, interactive=True)
             # Exports in the login subprocess do not update this Python process.
             for key in ("AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_SESSION_TOKEN",
                         "AWS_SECURITY_TOKEN", "AWS_DEFAULT_PROFILE"):
@@ -119,10 +128,10 @@ def main():
 
         if args.seed_model:
             run([*uv, "modal", "run", "infra/modal/seed_model.py", *scope])
-        discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope])
+        discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset])
         if args.dry_run:
             values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
-                      "s3://DATASETS_BUCKET/datasets/wildguardmix/REVISION", "s3://ACTIVATIONS_BUCKET/runs",
+                      f"s3://DATASETS_BUCKET/datasets/{args.dataset}/REVISION", "s3://ACTIVATIONS_BUCKET/runs",
                       "s3://ANALYSES_BUCKET/runs"]
         else:
             rows = [ANSI.sub("", line).strip().split("\t") for line in discovered.stdout.splitlines()]

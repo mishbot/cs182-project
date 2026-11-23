@@ -48,6 +48,9 @@ runtime = [
     "pyarrow==19.0.1",
 ]
 
+[tool.setuptools.package-data]
+cs182_project = ["third_party/refusal_direction/*"]
+
 [tool.setuptools.packages.find]
 include = ["cs182_project*"]
 

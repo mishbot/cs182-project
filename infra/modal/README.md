@@ -1,6 +1,6 @@
 # GPU tasks on Modal
 
-Run inference and WildGuardMix activation collection on demand, using the same
+Run inference and dataset activation collection on demand, using the same
 private ECR runtime image as the AWS dev server. Model and dataset snapshots come
 from S3; activation results are written directly to S3. A persistent Modal cache
 is managed automatically. There are no Modal seeding commands.
@@ -108,7 +108,8 @@ local entrypoint after the remote call completes.
 
 ## Activation collection
 
-First publish the default membership file once from your workstation:
+The default corpus seeder already publishes membership. For an explicitly selected
+WildGuardMix snapshot, first publish membership from your workstation:
 
 ```bash
 uv run --locked --extra seed python infra/scripts/partition_dataset.py \
@@ -131,8 +132,9 @@ uv run --locked --extra modal modal run infra/modal/collect_activations.py \
   --sample-size 1000 --seed 0 --batch-size 4 --max-input-tokens 2048
 ```
 
-This calls the image's `collect` function. Sampling balances harmfulness ×
-adversarial status (at least 20 samples for five-fold analysis). Adversarial
+This calls the image's `collect` function. Default corpus sampling balances harmful
+and harmless prompts (at least 10 samples for five-fold analysis). WildGuardMix
+balances harmfulness × adversarial status (at least 20 samples). Adversarial
 labels, top-100 next-token probabilities, and exact refusal log masses accompany
 the activations. Sampling, preflight checks,
 layer hooks, in-memory Parquet sharding, and completion-manifest semantics are
@@ -305,3 +307,16 @@ no ECR preparation or GPU is needed. The final output is the new S3 snapshot URI
 override its defaults. The Modal profile and forwarded AWS credentials are
 independent. See [checkpoint import](../import_model.md) for permissions,
 integrity, retries, and legacy-Qwen compatibility limitations.
+
+## Default dataset corpus
+
+[Local dataset seeding](../datasets.md) now uploads AdvBench, MaliciousInstruct,
+TDC2023, and instruction-only Alpaca as four normalized Parquets with shared
+provenance and membership. Dataset definitions/preprocessing are attributed to
+andyrdt; the 80/20 split and pooled balanced sampler are project-specific.
+
+`source infra/modal/env.sh` and the experiment wrapper select this corpus by
+default. Rebuild and prepare the updated runtime after seeding it. Collection
+balances harmful/harmless rows and needs no adversarial group. Use explicit
+`--dataset wildguardmix` with discovery/the wrapper to select the legacy dataset.
+The new corpus seeder creates its partition automatically.

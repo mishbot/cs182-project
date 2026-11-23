@@ -85,7 +85,8 @@ Schema-version-2 activations are required. Older runs lack probability data and
 must be recollected. Collection defaults to the new training partition, leaving
 validation reserved; see [collection setup](README.md#collect-wildguardmix-activations).
 Five-fold CV requires five harmful and five harmless samples **in each enabled
-group**. The four-way balanced collector needs 20 rows to meet this minimum.
+group**. The default [refusal-direction corpus](datasets.md) needs 10 balanced
+non-adversarial samples; explicit WildGuardMix four-group collection needs 20.
 Sparse excluded adversarial groups do not block default analysis. Use fewer folds
 for smaller samples, with at least two examples of each enabled class.
 

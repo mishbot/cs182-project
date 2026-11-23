@@ -11,7 +11,14 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from ._types import JsonObject, PathInput
-from .dataset_artifacts import SPLITS, download_dataset
+from .dataset_artifacts import (
+    CORPUS_ID,
+    SPLITS,
+    dataset_name,
+    download_dataset,
+    read_prompt_rows,
+    source_files,
+)
 from .model_artifacts import MANIFEST, parse_s3_uri, sha256
 
 if TYPE_CHECKING:
@@ -39,7 +46,7 @@ def partition_uri(
         "dataset_manifest": manifest,
     }
     digest = hashlib.sha256(json.dumps(identity, sort_keys=True).encode()).hexdigest()
-    return f"s3://{bucket}/partitions/wildguardmix/{manifest['revision']}/{digest}.json"
+    return f"s3://{bucket}/partitions/{dataset_name(manifest)}/{manifest['revision']}/{digest}.json"
 
 
 def split_rows(
@@ -84,7 +91,7 @@ def validate_partition(
         value.get("schema_version") != 1
         or value.get("dataset_revision") != manifest["revision"]
         or value.get("dataset_manifest_sha256") != manifest_sha256
-        or value.get("source_file") != SPLITS["train"]
+        or any(value.get(key) != expected for key, expected in partition_source(manifest).items())
         or value.get("row_count") != row_count
     ):
         raise ValueError("Partition provenance does not match the pinned dataset snapshot.")
@@ -133,20 +140,46 @@ def publish_partition(
     cache_dir: PathInput = ".cache",
 ) -> str:
     """Publish a deterministic sidecar; never rewrite the archived parquet or manifest."""
-    import pyarrow.parquet as pq
+    directory = download_dataset(s3, dataset_s3_uri, Path(cache_dir) / "datasets")
+    manifest = json.loads((directory / MANIFEST).read_text())
+    return publish_partition_rows(
+        s3,
+        dataset_s3_uri,
+        manifest,
+        sha256(directory / MANIFEST),
+        read_prompt_rows(directory, manifest),
+        validation_fraction=validation_fraction,
+        seed=seed,
+    )
+
+
+def partition_source(manifest: JsonObject) -> JsonObject:
+    return (
+        {"source_files": source_files(manifest)}
+        if manifest["dataset_id"] == CORPUS_ID
+        else {"source_file": SPLITS["train"]}
+    )
+
+
+def publish_partition_rows(
+    s3: S3Client,
+    dataset_s3_uri: str,
+    manifest: JsonObject,
+    manifest_sha256: str,
+    rows: Sequence[Mapping[str, object]],
+    *,
+    validation_fraction: float = 0.2,
+    seed: int = 0,
+) -> str:
+    """Publish membership directly from prepared rows, without redownloading a newly seeded corpus."""
     from botocore.exceptions import ClientError
 
     configuration = partition_config(validation_fraction, seed)
-    directory = download_dataset(s3, dataset_s3_uri, Path(cache_dir) / "datasets")
-    manifest = json.loads((directory / MANIFEST).read_text())
-    rows = pq.read_table(
-        directory / SPLITS["train"], columns=["prompt", "prompt_harm_label", "adversarial"]
-    ).to_pylist()
     value = {
         "schema_version": 1,
         "dataset_revision": manifest["revision"],
-        "dataset_manifest_sha256": sha256(directory / MANIFEST),
-        "source_file": SPLITS["train"],
+        "dataset_manifest_sha256": manifest_sha256,
+        **partition_source(manifest),
         "row_count": len(rows),
         "configuration": configuration,
         "splits": split_rows(rows, validation_fraction, seed),

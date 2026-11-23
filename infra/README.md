@@ -2,7 +2,7 @@
 
 This implements the interactive portion of the infrastructure plan: S3
 storage, ECR, a persistent data disk, a replaceable GPU dev server, model archival,
-single-prompt inference, CodeBuild image publishing, and WildGuardMix activation collection to S3. Managed
+single-prompt inference, CodeBuild image publishing, and dataset activation collection to S3. Managed
 batch-job infrastructure is deferred.
 For on-demand GPU tasks using the same ECR image and S3 snapshots, see
 [the Modal instructions](modal/README.md); this does not require an EC2 dev server.
@@ -72,7 +72,7 @@ parsed command-line arguments. For example, after installing the `seed` extra:
 import boto3
 from cs182_project.seeding import seed_dataset
 
-uri = seed_dataset(boto3.client("s3"), bucket="YOUR_DATASET_BUCKET", revision="main")
+uri = seed_dataset(boto3.client("s3"), bucket="YOUR_DATASET_BUCKET")
 print(uri)
 ```
 
@@ -185,7 +185,7 @@ revisions, use `--revision FULL_COMMIT_SHA`; publish derived weights separately
 under a distinct prefix with the same manifest format. Do not modify a published snapshot in place. S3 versioning preserves old
 objects but consumers read the current published snapshot.
 
-## Archive WildGuardMix
+## Seed datasets
 
 Run this once from the workstation using the same uv environment as model
 seeding and the dedicated datasets bucket:
@@ -193,29 +193,19 @@ seeding and the dedicated datasets bucket:
 ```bash
 DATASET_BUCKET=$(tofu -chdir=infra/persistent output -raw dataset_bucket)
 AWS_DEFAULT_REGION="$REGION" uv run --locked --extra seed python infra/scripts/seed_dataset.py \
-  --bucket "$DATASET_BUCKET" --revision main --cache-dir .cache/huggingface
+  --bucket "$DATASET_BUCKET" --cache-dir .cache/datasets
 ```
 
-The script resolves the requested revision to a full commit SHA before fetching
-`train/wildguard_train.parquet`, `test/wildguard_test.parquet`, and the dataset
-card from [allenai/wildguardmix](https://huggingface.co/datasets/allenai/wildguardmix).
-Use `--revision FULL_COMMIT_SHA` to select an exact historical revision. If upstream
-access requires authorization, obtain dataset access on Hugging Face and supply
-`HF_TOKEN` or use your existing Hugging Face login when seeding.
+The default now prepares the [refusal-direction corpus](datasets.md): separate
+AdvBench, MaliciousInstruct, TDC2023, and Alpaca Parquets sharing a three-column
+schema and a versioned manifest. It also publishes grouped 80/20 membership.
+Dataset definitions/preprocessing are explicitly attributed to andyrdt, with
+original-source provenance and license/attribution files included.
 
-The final stdout line is the dataset URI:
-`s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA`. Save it for extraction. The
-manifest preserves the revision, file sizes, SHA-256 checksums, split paths, and
-attribution; it is published after all files succeed. Published revisions cannot
-be overwritten; an interrupted upload without a manifest can be retried. Seeding
-does not install Git or the `datasets` package. Subsequent extraction reads the
-S3 snapshot, with no Hugging Face access or token needed at runtime.
-
-If a dataset snapshot was previously stored in the model bucket, seed the same
-`--revision FULL_COMMIT_SHA` into the datasets bucket and update `DATASET_URI`.
-Existing objects are not moved or deleted automatically. With operator credentials,
-you can also copy the snapshot's data files and dataset card first, then copy its
-completion manifest last.
+Use `--dataset wildguardmix --revision main` for the previous full WildGuardMix
+archive behavior; its separate partitioning step remains available. Refresh
+`DATASET_URI` through the environment helper after seeding and rebuild the runtime
+before collecting from the new corpus.
 
 ## Deploy and connect to the dev server
 
@@ -323,7 +313,7 @@ are preserved. Snapshot files and checksums are unchanged. SDPA remains the
 default supported backend on CPU and T4; the separate FlashAttention-2 package
 is unnecessary for this fix.
 
-## Collect WildGuardMix activations
+## Collect activations
 
 For an existing deployment, apply the persistent stack to create the dedicated
 datasets bucket, export its updated outputs, then review and apply the dev-server
@@ -337,8 +327,10 @@ tofu -chdir=infra/dev-server plan
 tofu -chdir=infra/dev-server apply
 ```
 
-Before collection, publish the train/validation membership once from your workstation,
-using operator credentials with write access to the datasets bucket:
+The default corpus seeder publishes train/validation membership automatically;
+use its returned dataset URI for collection. See [dataset preparation](datasets.md).
+For an explicitly selected WildGuardMix snapshot, publish membership once from
+your workstation using operator credentials with write access to the datasets bucket:
 
 ```bash
 DATASET_URI=s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA
@@ -362,7 +354,7 @@ and `IMAGE_TAG` as inference, the dataset URI printed by seeding, and the
 `activation_bucket` output from the persistent stack:
 
 ```bash
-DATASET_URI=s3://DATASET_BUCKET/datasets/wildguardmix/FULL_COMMIT_SHA
+DATASET_URI=s3://DATASET_BUCKET/datasets/refusal-direction/CORPUS_SHA256
 ACTIVATION_BUCKET=YOUR_ACTIVATION_BUCKET
 docker run --rm --gpus all --entrypoint python \
   -e AWS_DEFAULT_REGION="$REGION" \
@@ -375,18 +367,21 @@ docker run --rm --gpus all --entrypoint python \
 ```
 
 `--sample-size` is required and must be at least 4. Use at least **20** for the
-default five-fold analysis. `--split train` now means the training membership
+five-fold analysis with all four WildGuardMix groups; the default corpus needs
+at least **10**. `--split train` means the training membership
 of this partition, and fails clearly if the membership file has not been published.
 Explicit `--split validation` uses its validation membership; `--split test` uses
 the untouched official test split. The default is `train`.
 
-Sampling balances the four harmful/harmless × adversarial/non-adversarial groups,
-without replacement. Remainder rows go in order to non-adversarial harmful,
+For the default corpus, sampling balances harmful and harmless prompts pooled
+across sources. WildGuardMix sampling balances the four harmful/harmless ×
+adversarial/non-adversarial groups, without replacement. Remainder rows go in order to non-adversarial harmful,
 non-adversarial harmless, adversarial harmful, then adversarial harmless. Exact
 prompts are deduplicated, and prompts with conflicting known harm labels or
 adversarial flags are excluded. Empty prompts, unknown labels, and nonboolean
 adversarial values are ineligible. Source indices always refer to the original
-Parquet file. `--seed` controls sampling independently of the partition seed.
+Parquet file for WildGuardMix, or the concatenated four corpus files in manifest
+order. `--seed` controls sampling independently of the partition seed.
 Insufficient eligible examples fail rather than reducing the sample size.
 
 The script applies Qwen's chat template, including the assistant generation prefix.
@@ -420,11 +415,11 @@ Each Parquet row contains:
 
 | Column | Meaning |
 | --- | --- |
-| `source_row_index` | Zero-based row index in the original split, before filtering |
+| `source_row_index` | Zero-based source row before filtering; corpus files concatenate in manifest order |
 | `prompt` | Original, unmodified dataset prompt |
 | `prompt_harm_label` | Original `harmful` or `unharmful` label |
 | `harmful` | Boolean version of the label |
-| `adversarial` | Original WildGuardMix boolean flag |
+| `adversarial` | Source flag; always false for the default processed corpus |
 | `top_token_ids` | 100 token IDs sorted by decreasing next-token probability |
 | `top_token_probabilities` | Corresponding probabilities, normalized over the entire vocabulary |
 | `refusal_log_probability` | Log probability mass of the refusal token set |
