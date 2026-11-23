@@ -113,6 +113,7 @@ def run_analysis(
     folds: int = 5,
     seed: int = 0,
     include_adversarial: bool = False,
+    include_ridge: bool = False,
     workers: int = 1,
     threads_per_worker: int = 1,
     output_dir: PathInput | None = None,
@@ -154,6 +155,7 @@ def run_analysis(
         folds=folds,
         seed=seed,
         include_adversarial=include_adversarial,
+        include_ridge=include_ridge,
         workers=workers,
         threads_per_worker=threads_per_worker,
     )
@@ -168,6 +170,7 @@ def run_analysis(
         "folds": folds,
         "seed": seed,
         "include_adversarial": include_adversarial,
+        "include_ridge": include_ridge,
         "refusal_threshold": 0,
         "refusal_comparison": ">",
         "execution": execution,

@@ -1,6 +1,7 @@
 """Compare two experiment snapshots on held-out prompts and write a local TeX report."""
 
 import json
+import os
 import re
 from pathlib import Path
 from tempfile import NamedTemporaryFile
@@ -52,6 +53,7 @@ def main(
     seed: int = 0,
     gpu: str = "T4",
     output: str = "",
+    runtime_image: str = "",
 ) -> None:
     if samples_per_class < 1 or seed < 0:
         raise ValueError("--samples-per-class must be positive and --seed must be nonnegative.")
@@ -61,9 +63,15 @@ def main(
     experiment_id = experiment.get("experiment_id")
     if not isinstance(experiment_id, str) or not re.fullmatch(r"[A-Za-z0-9_-]+", experiment_id):
         raise ValueError("Experiment JSON has no valid experiment_id.")
-    reference = experiment.get("runtime_image")
+    # env.sh resolves CS182_MODAL_IMAGE to the newest published runtime. The
+    # experiment's recorded image remains provenance for its original stages,
+    # but should not constrain later analysis tools to an older code snapshot.
+    reference = runtime_image or os.environ.get("CS182_MODAL_IMAGE", "")
     if not isinstance(reference, str) or not reference:
-        raise ValueError("Experiment JSON has no runtime_image.")
+        raise ValueError(
+            "No runtime image selected. Source infra/modal/env.sh for the latest image "
+            "or pass --runtime-image explicitly."
+        )
     options = comparison_inputs(experiment)
     destination = (
         Path(output).expanduser()

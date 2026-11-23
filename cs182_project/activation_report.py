@@ -22,6 +22,7 @@ from .activation_analysis import (
     best_layers,
     best_regression_layers,
     classification_metrics,
+    midpoint_block_input_limit,
     selected_directions,
 )
 
@@ -62,6 +63,12 @@ def _group_summary(analysis: ActivationAnalysis) -> JsonObject:
                 "prediction": "sklearn.predict",
             },
             "midpoint": "training-fold means; (x - (mu_h + mu_u)/2) dot (mu_h - mu_u) >= 0",
+            "midpoint_layer_selection": {
+                "num_layers": len(analysis.layers),
+                "layer_indexing": "zero-based block output",
+                "eligibility_rule": "layer + 1 < floor(0.8 * num_layers)",
+                "block_input_limit_exclusive": midpoint_block_input_limit(len(analysis.layers)),
+            },
             "zero_division": 0,
             "refusal_regression": {
                 "model": "Ridge",
@@ -69,7 +76,9 @@ def _group_summary(analysis: ActivationAnalysis) -> JsonObject:
                 "scaler": "training-fold StandardScaler",
                 "solver": "lsqr",
                 "tol": 1e-8,
-            },
+            }
+            if analysis.layers[0].refusal_regression is not None
+            else None,
         },
         "projection": "Full-run descriptive means; normalized mean difference and PC1 of centered orthogonal residuals (full SVD). Not used for evaluation.",
         "versions": {
@@ -84,7 +93,9 @@ def _group_summary(analysis: ActivationAnalysis) -> JsonObject:
                 "layer": layer.layer,
                 "logistic": asdict(layer.logistic),
                 "midpoint": asdict(layer.midpoint) if layer.midpoint is not None else None,
-                "refusal_regression": asdict(layer.refusal_regression),
+                "refusal_regression": asdict(layer.refusal_regression)
+                if layer.refusal_regression is not None
+                else None,
                 "difference_norm": float(
                     (layer.projection.difference @ layer.projection.difference) ** 0.5
                 ),
@@ -353,6 +364,9 @@ def analysis_summary(analysis: ActivationAnalyses) -> JsonObject:
         "source_manifest": analysis.run.manifest,
         "groups": {group.group: _group_summary(group) for group in analysis.groups},
         "include_adversarial": any(group.group == "adversarial" for group in analysis.groups),
+        "include_ridge": any(
+            group.layers[0].refusal_regression is not None for group in analysis.groups
+        ),
         "selected_directions": [
             {"name": item.name, "layer": item.layer, "valid": item.valid} for item in directions
         ],
@@ -450,12 +464,21 @@ Refusal as a harmful-input detector uses the strict threshold &gt; 0. Harmful is
     for group in analysis.groups:
         info = summary["groups"][group.group]
         winners = info["best_layers"]
+        include_ridge = group.layers[0].refusal_regression is not None
+        regression_winners = (
+            f"<br><strong>Best refusal regression R² layer(s): {winners['refusal_regression']}.</strong>"
+            if include_ridge
+            else ""
+        )
         parts.append(
             f"<h2>{escape(group.group.replace('_', ' ').title())}</h2>"
             f"<p>{group.harmful.size} rows; {group.folds}-fold CV, seed {group.seed}.</p>"
             f"<p><strong>Best logistic F1 layer(s): {winners['logistic']}.</strong><br>"
-            f"<strong>Best midpoint F1 layer(s): {winners['midpoint']}.</strong><br>"
-            f"<strong>Best refusal regression R² layer(s): {winners['refusal_regression']}.</strong></p>"
+            f"<strong>Best eligible midpoint F1 layer(s): {winners['midpoint']}.</strong>"
+            f"{regression_winners}</p>"
+            "<p>Midpoint selection requires layer + 1 &lt; floor(0.8 × number of layers), "
+            "where layer is the zero-based block output index. "
+            f"The exclusive block input limit is {midpoint_block_input_limit(len(group.layers))}.</p>"
         )
         parts.append(
             _histogram(analysis, group).to_html(
@@ -477,11 +500,15 @@ Refusal as a harmful-input detector uses the strict threshold &gt; 0. Harmful is
                 ' class="best"' if layer.layer in winners["refusal_regression"] else ""
             )
             regression = layer.refusal_regression
-            cells = "".join(
-                f"<td{regression_style}>{value:.6f}</td>"
-                if value is not None
-                else f"<td{regression_style}>Undefined</td>"
-                for value in (regression.r2, regression.rmse, regression.mae)
+            cells = (
+                "".join(
+                    f"<td{regression_style}>{value:.6f}</td>"
+                    if value is not None
+                    else f"<td{regression_style}>Undefined</td>"
+                    for value in (regression.r2, regression.rmse, regression.mae)
+                )
+                if regression is not None
+                else ""
             )
             rows.append(
                 f"<tr><td>{layer.layer}</td>"
@@ -497,9 +524,11 @@ Refusal as a harmful-input detector uses the strict threshold &gt; 0. Harmful is
         parts.append("<h3>Per-layer metrics</h3>")
         parts.append(
             "<table><thead><tr><th rowspan='2'>Layer</th><th colspan='3'>Logistic</th>"
-            "<th colspan='3'>Mean-difference midpoint</th><th colspan='3'>Refusal Ridge regression</th>"
-            "</tr><tr><th>Precision</th><th>Recall</th><th>F1</th><th>Precision</th><th>Recall</th>"
-            "<th>F1</th><th>R²</th><th>RMSE</th><th>MAE</th></tr></thead><tbody>"
+            "<th colspan='3'>Mean-difference midpoint</th>"
+            + ("<th colspan='3'>Refusal Ridge regression</th>" if include_ridge else "")
+            + "</tr><tr><th>Precision</th><th>Recall</th><th>F1</th><th>Precision</th><th>Recall</th><th>F1</th>"
+            + ("<th>R²</th><th>RMSE</th><th>MAE</th>" if include_ridge else "")
+            + "</tr></thead><tbody>"
             + "".join(rows)
             + "</tbody></table>"
         )
@@ -590,9 +619,6 @@ def write_analysis_report(
                         [layer.midpoint_predictions for layer in group.layers]
                     ),
                     "midpoint_valid": np.stack([layer.midpoint_valid for layer in group.layers]),
-                    "refusal_predictions": np.stack(
-                        [layer.refusal_predictions for layer in group.layers]
-                    ),
                     "logistic_directions": np.stack(
                         [layer.logistic_fit.direction for layer in group.layers]
                     ),
@@ -605,16 +631,6 @@ def write_analysis_report(
                     "logistic_valid": np.array(
                         [layer.logistic_fit.valid for layer in group.layers]
                     ),
-                    "refusal_directions": np.stack(
-                        [layer.refusal_fit.direction for layer in group.layers]
-                    ),
-                    "refusal_coefficients": np.stack(
-                        [layer.refusal_fit.coefficient for layer in group.layers]
-                    ),
-                    "refusal_intercepts": np.array(
-                        [layer.refusal_fit.intercept for layer in group.layers]
-                    ),
-                    "refusal_valid": np.array([layer.refusal_fit.valid for layer in group.layers]),
                     "midpoint_direction_valid": np.array(
                         [
                             bool(np.linalg.norm(layer.projection.difference))
@@ -624,6 +640,29 @@ def write_analysis_report(
                 }.items()
             }
         )
+        refusal_fits = [fit for layer in group.layers if (fit := layer.refusal_fit) is not None]
+        if refusal_fits:
+            arrays.update(
+                {
+                    prefix + "refusal_predictions": np.stack(
+                        [
+                            predictions
+                            for layer in group.layers
+                            if (predictions := layer.refusal_predictions) is not None
+                        ]
+                    ),
+                    prefix + "refusal_directions": np.stack(
+                        [fit.direction for fit in refusal_fits]
+                    ),
+                    prefix + "refusal_coefficients": np.stack(
+                        [fit.coefficient for fit in refusal_fits]
+                    ),
+                    prefix + "refusal_intercepts": np.array(
+                        [fit.intercept for fit in refusal_fits]
+                    ),
+                    prefix + "refusal_valid": np.array([fit.valid for fit in refusal_fits]),
+                }
+            )
     with tempfile.TemporaryDirectory(prefix=".analysis-", dir=directory) as temporary:
         staging = Path(temporary)
         (staging / "metrics.json").write_text(

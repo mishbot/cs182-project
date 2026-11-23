@@ -221,11 +221,19 @@ References: [existing images](https://modal.com/docs/guide/existing-images),
 ## Compare generated responses on validation prompts
 
 Run this command from the repository root after signing in to AWS and Modal.
-It uses the runtime image and snapshots recorded in the experiment checkpoint.
+It uses the latest runtime image selected by `infra/modal/env.sh` and the model
+and dataset snapshots recorded in the experiment checkpoint. Pass
+`--runtime-image` to use a specific prepared image instead.
 
 ```bash
 uv run --locked --extra modal modal run infra/modal/compare_validation_outputs.py \
   --experiment-json reports/activations/experiment-TIMESTAMP.json
+```
+
+```bash
+uv run --locked --extra modal modal run infra/modal/compare_validation_outputs.py \
+  --experiment-json reports/activations/experiment-TIMESTAMP.json \
+  --runtime-image "$CS182_MODAL_IMAGE"
 ```
 
 By default it selects five harmful and five harmless validation prompts with
@@ -233,7 +241,7 @@ seed 0. Both models receive the same prompts and generate up to 128 new tokens
 per response. The command writes a standalone report to
 `report_v1/validation-comparison-EXPERIMENT_ID.tex`, which you can compile with
 LuaLaTeX. Use `--samples-per-class`, `--seed`, `--gpu`, or `--output` to change
-the defaults.
+the defaults. Source `infra/modal/env.sh` first to discover the latest image.
 
 ## GPU activation analysis
 
@@ -257,14 +265,15 @@ Layer completion logs stream to your terminal.
 `--run-s3-uri` chooses an exact run; otherwise the latest completed activation
 run is selected. `--activation-root-s3-uri` and `--output-s3-uri` override the
 input/output roots. Environment defaults are `OUTPUT_URI` and `ANALYSIS_URI`.
-Only non-adversarial rows are analyzed by default, with three selected directions.
-Adding `--include-adversarial` produces six directions and separate histograms
-for the two groups. The strict refusal threshold is `> 0`.
+Only non-adversarial rows are analyzed by default, with two selected directions.
+`--include-adversarial` adds a second group and its histogram. `--include-ridge`
+adds a refusal regression and a third direction per enabled group. The strict
+refusal threshold is `> 0`.
 
 Artifacts and a final completion manifest go into the private analyses bucket;
 the command prints the report's S3 URI. Forwarded AWS credentials need activation
 read/list and analyses write/multipart-abort permissions. See [analysis details](../analysis.md)
-for provisioning, retrieval, evaluation, and numerical exports. A100 runtime,
+for provisioning, retrieval, evaluation, and numerical exports. CPU runtime,
 S3 requests/storage, and applicable data transfer incur charges.
 
 ## Full original-Qwen experiment

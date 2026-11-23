@@ -144,8 +144,9 @@ workstation credentials rather than that instance role. No bucket is made public
 ## Report and numerical outputs
 
 Each enabled group has classifier precision, recall, F1, highlighted best-F1
-layers, and refusal Ridge regression R², RMSE, and MAE. Layer-selectable plots show
-the same activation coordinates colored by harmfulness or refusal metric.
+layers, and plots of activation coordinates colored by harmfulness or refusal
+metric. Pass `--include-ridge` to either analysis command to fit per-layer
+refusal Ridge models and report R², RMSE, and MAE.
 Continuous color limits are shared across enabled groups.
 
 Histograms are separate: one compares non-adversarial harmful/harmless samples;
@@ -153,15 +154,15 @@ when enabled, another compares adversarial harmful/harmless samples. They share
 bins and each marks the zero threshold. Each group also reports refusal as a
 harmful-input detector: precision, recall, F1, and confusion counts.
 
-A heatmap compares three selected unit directions per enabled group (three by
-default, six with adversarial analysis). Names include their source layers.
+A heatmap compares two selected unit directions per enabled group by default.
+`--include-ridge` adds a third direction per group. Names include their source layers.
 The HTML embeds Plotly.js once and works offline. Hover text includes original
 source indices, fold IDs, prompt excerpts, and refusal metrics.
 
 `metrics.json` contains full-precision metrics, all tied best layers, provenance,
 settings, versions, and the inner-product matrix. Load `directions.npz` using
 `numpy.load(path, allow_pickle=False)`. Top-level arrays include input row indices,
-labels, `selected_directions` `[3 or 6, hidden]`, `selected_names`, `selected_layers`,
+labels, `selected_directions` `[num_selected, hidden]`, `selected_names`, `selected_layers`,
 `selected_valid`, and `inner_products`. Unavailable directions use zero vectors,
 false validity flags, and NaN matrix entries (JSON uses null); absent winning
 layers use index -1.
@@ -172,7 +173,8 @@ Per-group arrays are prefixed `non_adversarial__` or `adversarial__`:
   `[layers, hidden]`.
 - `logistic_directions`, `refusal_directions`, corresponding `*_coefficients`,
   `*_intercepts`, and `*_valid`. Coefficients/intercepts are converted back to raw
-  activation coordinates before normalization.
+  activation coordinates before normalization. Ridge arrays and predictions are
+  written only with `--include-ridge`.
 - `coordinates` `[layers, subgroup_rows, 2]`, out-of-fold classifier and regression
   predictions, and midpoint validity masks.
 - Subgroup source indices, labels, fold IDs, and refusal metrics.
@@ -203,8 +205,14 @@ Logistic regression uses training-fold standardization, L2 regularization with
 Constant refusal targets have undefined R² and are excluded from regression
 ranking. Degenerate directions are marked unavailable.
 
-Select classifiers by highest F1 and regression by highest R². Highlight every
-exact tie; use the earliest tied layer for the selected direction. Models are
+Select classifiers by highest F1 and regression by highest R². For midpoint
+selection, apply the cutoff from [Arditi et al.'s reference implementation](https://github.com/andyrdt/refusal_direction/blob/main/pipeline/submodules/select_direction.py).
+Output layer `i` is eligible when `i + 1 < (4 * num_layers) // 5`, because the
+reference indexes block inputs. A 24-block model therefore uses outputs 0–17 as
+candidates. The report still shows metrics and plots for all layers. Midpoint F1
+ranks the eligible layers in this analysis.
+
+Highlight every exact tie; use the earliest tied layer for the selected direction. Models are
 refitted on all subgroup rows for coefficient export. Classifier directions point
 toward harmful predictions and regression directions toward increasing refusal.
 Scores used for layer selection are exploratory CV results, not independent

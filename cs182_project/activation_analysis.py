@@ -70,9 +70,9 @@ class LayerAnalysis:
     midpoint_valid: NDArray[np.bool_]
     notes: tuple[str, ...]
     logistic_fit: LinearFit
-    refusal_fit: LinearFit
-    refusal_regression: RegressionMetrics
-    refusal_predictions: NDArray[np.float64]
+    refusal_fit: LinearFit | None
+    refusal_regression: RegressionMetrics | None
+    refusal_predictions: NDArray[np.float64] | None
     elapsed_seconds: float = 0.0
 
 
@@ -243,7 +243,7 @@ def _evaluate_layer(
     labels: NDArray[np.bool_],
     partitions: list[tuple[NDArray[np.int64], NDArray[np.int64]]],
     seed: int,
-    targets: NDArray[np.float64],
+    targets: NDArray[np.float64] | None,
 ) -> LayerAnalysis:
     import numpy as np
     from sklearn.exceptions import ConvergenceWarning
@@ -254,9 +254,11 @@ def _evaluate_layer(
     logistic_predictions = np.zeros(labels.size, dtype=np.bool_)
     midpoint_predictions = np.zeros(labels.size, dtype=np.bool_)
     midpoint_valid = np.ones(labels.size, dtype=np.bool_)
-    regression_predictions = np.empty(labels.size, dtype=np.float64)
+    regression_predictions = (
+        np.empty(labels.size, dtype=np.float64) if targets is not None else None
+    )
     notes: list[str] = []
-    # The final pass refits both models on all subgroup rows for direction export.
+    # The final pass refits enabled models on all subgroup rows for direction export.
     all_rows = np.arange(labels.size, dtype=np.int64)
     fits: list[LinearFit] = []
     for fold, (train, test) in enumerate([*partitions, (all_rows, all_rows)]):
@@ -271,19 +273,24 @@ def _evaluate_layer(
                 raise ValueError(
                     f"Logistic regression did not converge at layer {layer}, fold {fold}."
                 ) from error
-        regression = Ridge(alpha=1.0, solver="lsqr", tol=1e-8).fit(train_features, targets[train])
+        regression = (
+            Ridge(alpha=1.0, solver="lsqr", tol=1e-8).fit(train_features, targets[train])
+            if targets is not None
+            else None
+        )
         if fold == len(partitions):
-            for coefficient, intercept in [
-                (logistic.coef_[0], np.asarray(logistic.intercept_).reshape(-1)[0]),
-                (regression.coef_, regression.intercept_),
-            ]:
+            coefficients = [(logistic.coef_[0], np.asarray(logistic.intercept_).reshape(-1)[0])]
+            if regression is not None:
+                coefficients.append((regression.coef_, regression.intercept_))
+            for coefficient, intercept in coefficients:
                 assert scaler.scale_ is not None and scaler.mean_ is not None
                 raw = np.asarray(coefficient / scaler.scale_, dtype=np.float64)
                 fits.append(linear_fit(raw, float(intercept - raw @ scaler.mean_)))
             break
         test_features = scaler.transform(features[test])
         logistic_predictions[test] = logistic.predict(test_features)
-        regression_predictions[test] = regression.predict(test_features)
+        if regression is not None and regression_predictions is not None:
+            regression_predictions[test] = regression.predict(test_features)
         predictions = midpoint_predict(features[train], labels[train], features[test])
         if predictions is None:
             midpoint_valid[test] = False
@@ -295,10 +302,17 @@ def _evaluate_layer(
     midpoint_metrics = (
         classification_metrics(labels, midpoint_predictions) if midpoint_valid.all() else None
     )
-    constant_target = float(np.var(targets)) == 0
-    if constant_target:
-        notes.append(
-            "Constant refusal metric: regression R² is undefined and excluded from ranking."
+    regression_metrics = None
+    if targets is not None and regression_predictions is not None:
+        constant_target = float(np.var(targets)) == 0
+        if constant_target:
+            notes.append(
+                "Constant refusal metric: regression R² is undefined and excluded from ranking."
+            )
+        regression_metrics = RegressionMetrics(
+            None if constant_target else float(r2_score(targets, regression_predictions)),
+            float(mean_squared_error(targets, regression_predictions)) ** 0.5,
+            float(mean_absolute_error(targets, regression_predictions)),
         )
     return LayerAnalysis(
         layer,
@@ -310,12 +324,8 @@ def _evaluate_layer(
         midpoint_valid,
         tuple(notes),
         fits[0],
-        fits[1],
-        RegressionMetrics(
-            None if constant_target else float(r2_score(targets, regression_predictions)),
-            float(mean_squared_error(targets, regression_predictions)) ** 0.5,
-            float(mean_absolute_error(targets, regression_predictions)),
-        ),
+        fits[1] if targets is not None else None,
+        regression_metrics,
         regression_predictions,
     )
 
@@ -326,7 +336,7 @@ def _evaluate_layer_task(
     labels: NDArray[np.bool_],
     partitions: list[tuple[NDArray[np.int64], NDArray[np.int64]]],
     seed: int,
-    targets: NDArray[np.float64],
+    targets: NDArray[np.float64] | None,
     threads_per_worker: int,
 ) -> LayerAnalysis:
     """Copy only this layer to float64 and bound native numerical thread pools."""
@@ -341,13 +351,21 @@ def _evaluate_layer_task(
 
 
 def _analyze_group(
-    run: ActivationRun, group: str, *, folds: int, seed: int, workers: int, threads_per_worker: int
+    run: ActivationRun,
+    group: str,
+    *,
+    folds: int,
+    seed: int,
+    workers: int,
+    threads_per_worker: int,
+    include_ridge: bool,
 ) -> ActivationAnalysis:
     """Use identical stratified folds for every layer and both classifiers."""
     import numpy as np
     from sklearn.model_selection import StratifiedKFold
 
     targets = refusal_metric(run.refusal_log_probability, run.nonrefusal_log_probability)
+    regression_targets = targets if include_ridge else None
     labels = run.harmful
     values = run.activations
     if (
@@ -391,7 +409,7 @@ def _analyze_group(
         for layer in range(values.shape[1]):
             completed(
                 _evaluate_layer_task(
-                    layer, values, labels, partitions, seed, targets, threads_per_worker
+                    layer, values, labels, partitions, seed, regression_targets, threads_per_worker
                 )
             )
     else:
@@ -411,7 +429,13 @@ def _analyze_group(
                             max_nbytes=None,
                         )(
                             delayed(_evaluate_layer_task)(
-                                layer, shared, labels, partitions, seed, targets, threads_per_worker
+                                layer,
+                                shared,
+                                labels,
+                                partitions,
+                                seed,
+                                regression_targets,
+                                threads_per_worker,
                             )
                             for layer in range(values.shape[1])
                         ),
@@ -437,10 +461,24 @@ def _analyze_group(
     )
 
 
+def midpoint_block_input_limit(num_layers: int) -> int:
+    """Return the exclusive block input cutoff from Arditi et al.'s reference code."""
+    return (4 * num_layers) // 5
+
+
 def best_layers(analysis: ActivationAnalysis, classifier: Classifier) -> list[int]:
-    """Return every exact tie for the highest pooled out-of-fold F1."""
-    scores = [(layer.layer, getattr(layer, classifier)) for layer in analysis.layers]
-    available = [(layer, metrics.f1) for layer, metrics in scores if metrics is not None]
+    """Return every exact tie for the highest eligible pooled out-of-fold F1."""
+    limit = midpoint_block_input_limit(len(analysis.layers))
+    available: list[tuple[int, float]] = []
+    for layer in analysis.layers:
+        # Output of block i corresponds to the input of block i + 1.
+        if classifier == "midpoint" and (
+            layer.layer + 1 >= limit or not layer.projection.direction.any()
+        ):
+            continue
+        metrics = getattr(layer, classifier)
+        if metrics is not None:
+            available.append((layer.layer, metrics.f1))
     if not available:
         return []
     maximum = max(score for _, score in available)
@@ -453,6 +491,7 @@ def analyze_activations(
     folds: int = 5,
     seed: int = 0,
     include_adversarial: bool = False,
+    include_ridge: bool = False,
     workers: int = 1,
     threads_per_worker: int = 1,
 ) -> ActivationAnalyses:
@@ -499,6 +538,7 @@ def analyze_activations(
                     seed=seed,
                     workers=workers,
                     threads_per_worker=threads_per_worker,
+                    include_ridge=include_ridge,
                 )
             )
         except ValueError as error:
@@ -510,7 +550,7 @@ def best_regression_layers(analysis: ActivationAnalysis) -> list[int]:
     scores = [
         (layer.layer, layer.refusal_regression.r2)
         for layer in analysis.layers
-        if layer.refusal_regression.r2 is not None
+        if layer.refusal_regression is not None and layer.refusal_regression.r2 is not None
     ]
     if not scores:
         return []
@@ -524,6 +564,8 @@ def selected_directions(analysis: ActivationAnalyses) -> list[SelectedDirection]
     selected: list[SelectedDirection] = []
     for group in analysis.groups:
         for method in ("logistic", "midpoint", "refusal"):
+            if method == "refusal" and group.layers[0].refusal_regression is None:
+                continue
             winners = (
                 best_regression_layers(group) if method == "refusal" else best_layers(group, method)
             )
@@ -545,6 +587,7 @@ def selected_directions(analysis: ActivationAnalyses) -> list[SelectedDirection]
                 if method == "refusal"
                 else linear_fit(layer.projection.difference, 0)
             )
+            assert fit is not None
             selected.append(
                 SelectedDirection(f"{group.group}_{method}", layer.layer, fit.direction, fit.valid)
             )

@@ -45,8 +45,8 @@ def fixture_run():
 class ParallelAnalysisTest(unittest.TestCase):
     def test_serial_and_process_workers_agree(self):
         run = fixture_run()
-        serial = analysis.analyze_activations(run, include_adversarial=True, workers=1)
-        parallel = analysis.analyze_activations(run, include_adversarial=True, workers=2)
+        serial = analysis.analyze_activations(run, include_adversarial=True, include_ridge=True, workers=1)
+        parallel = analysis.analyze_activations(run, include_adversarial=True, include_ridge=True, workers=2)
         for expected, actual in zip(serial.groups, parallel.groups):
             self.assertEqual([layer.layer for layer in actual.layers], [0, 1, 2])
             np.testing.assert_array_equal(expected.fold_ids, actual.fold_ids)
@@ -237,11 +237,32 @@ class ActivationMathTest(unittest.TestCase):
                     np.testing.assert_array_equal(fits[group_index*18+layer*6+fold], expected)
                     np.testing.assert_array_equal(midpoint.call_args_list[group_index*15+layer*5+fold].args[0], expected)
             self.assertEqual(analysis.best_layers(group, "logistic"), [0, 2])
-            self.assertEqual(analysis.best_layers(group, "midpoint"), [0, 2])
+            self.assertEqual(analysis.best_layers(group, "midpoint"), [0])
             self.assertEqual(group.layers[0].logistic.f1, 1)
             self.assertIsNone(group.layers[1].midpoint)
             self.assertFalse(group.layers[1].midpoint_valid.any())
             np.testing.assert_array_equal(np.bincount(group.fold_ids), [4]*5)
+
+    def test_midpoint_cutoff_excludes_late_winners(self):
+        result = analysis.analyze_activations(fixture_run())
+        group = result.groups[0]
+        template = group.layers[0]
+        layers = [
+            replace(template, layer=i, midpoint=replace(template.midpoint, f1=score))
+            for i, score in enumerate([.5] * 16 + [.75, .75, .9] + [.5] * 4 + [1.0])
+        ]
+        group = replace(group, layers=layers)
+        result = replace(result, groups=(group,))
+        self.assertEqual(analysis.best_layers(group, "midpoint"), [16, 17])
+        midpoint = next(item for item in analysis.selected_directions(result)
+                        if item.name == "non_adversarial_midpoint")
+        self.assertEqual(midpoint.layer, 16)
+        self.assertTrue(midpoint.valid)
+        group = replace(group, layers=[replace(layer, midpoint=None) if layer.layer < 18
+                                      else layer for layer in layers])
+        midpoint = analysis.selected_directions(replace(result, groups=(group,)))[1]
+        self.assertEqual(midpoint.layer, -1)
+        self.assertFalse(midpoint.valid)
 
     def test_degenerate_axes_small_runs_and_nonconvergence(self):
         run = fixture_run()
@@ -262,6 +283,8 @@ class ActivationMathTest(unittest.TestCase):
             text = path.read_text()
             self.assertIn('class="best"', text)
             self.assertIn('Best logistic F1 layer(s): [0, 2]', text)
+            self.assertIn('Best eligible midpoint F1 layer(s): [0]', text)
+            self.assertNotIn('Refusal Ridge regression</th>', text)
             self.assertNotIn('prompt </script><script>window.bad=1</script>', text)
             scripts = []
 
@@ -277,7 +300,13 @@ class ActivationMathTest(unittest.TestCase):
             self.assertEqual(summary['groups']['non_adversarial']['best_layers']['logistic'], [0, 2])
             self.assertEqual(summary['groups']['non_adversarial']['evaluation']['folds'], 5)
             self.assertEqual(summary['manifest_uri'], result.run.manifest_uri)
+            self.assertFalse(summary['include_ridge'])
+            self.assertEqual(summary['groups']['non_adversarial']['evaluation']
+                             ['midpoint_layer_selection']['block_input_limit_exclusive'], 2)
             with np.load(Path(directory)/"directions.npz", allow_pickle=False) as arrays:
+                self.assertNotIn('non_adversarial__refusal_predictions', arrays.files)
+                exported = dict(zip(arrays['selected_names'], arrays['selected_layers']))
+                self.assertEqual(exported['non_adversarial_midpoint'], 0)
                 self.assertEqual(arrays['non_adversarial__differences'].shape, (3, 3))
                 np.testing.assert_allclose(arrays['non_adversarial__differences'][0], [8, 0, 0])
                 self.assertEqual(arrays['non_adversarial__logistic_predictions'].shape, (3, 20))
@@ -301,7 +330,7 @@ class RefusalAnalysisTest(unittest.TestCase):
         from sklearn.linear_model import LogisticRegression, Ridge
         run = fixture_run()
         run = replace(run, activations=run.activations * np.array([3., 100., 1.], dtype=np.float32))
-        result = analysis.analyze_activations(run, include_adversarial=True)
+        result = analysis.analyze_activations(run, include_adversarial=True, include_ridge=True)
         selected = analysis.selected_directions(result)
         self.assertEqual(len(selected), 6)
         for group in result.groups:
@@ -336,17 +365,18 @@ class RefusalAnalysisTest(unittest.TestCase):
             self.assertEqual(figure.data[0].xbins.to_plotly_json(), other.data[0].xbins.to_plotly_json())
             self.assertEqual(float(figure.layout.shapes[0].x0), 0)
 
-    def test_default_skips_adversarial_fits_and_has_three_directions(self):
+    def test_default_skips_adversarial_and_ridge_fits(self):
         run = fixture_run()
         # A one-class adversarial subset must not block non-adversarial evaluation.
         harmful = run.harmful.copy()
         harmful[run.adversarial] = True
-        result = analysis.analyze_activations(replace(run, harmful=harmful))
+        with patch("sklearn.linear_model.Ridge.fit", side_effect=AssertionError("Unexpected Ridge fit")):
+            result = analysis.analyze_activations(replace(run, harmful=harmful))
         self.assertEqual([group.group for group in result.groups], ['non_adversarial'])
-        self.assertEqual(len(analysis.selected_directions(result)), 3)
+        self.assertEqual(len(analysis.selected_directions(result)), 2)
         summary = report.analysis_summary(result)
         self.assertFalse(summary['include_adversarial'])
-        self.assertEqual(np.shape(summary['inner_products']), (3, 3))
+        self.assertEqual(np.shape(summary['inner_products']), (2, 2))
         with tempfile.TemporaryDirectory() as directory:
             text = report.write_analysis_report(result, directory).read_text()
             self.assertIn('id="non_adversarial-refusal-histogram"', text)
@@ -356,17 +386,17 @@ class RefusalAnalysisTest(unittest.TestCase):
 
     def test_subgroups_are_independent_and_constant_targets_are_flagged(self):
         run = fixture_run()
-        original = analysis.analyze_activations(run, include_adversarial=True)
+        original = analysis.analyze_activations(run, include_adversarial=True, include_ridge=True)
         features = run.activations.copy()
         features[run.adversarial] += 100
-        changed = analysis.analyze_activations(replace(run, activations=features), include_adversarial=True)
+        changed = analysis.analyze_activations(replace(run, activations=features), include_adversarial=True, include_ridge=True)
         for old, new in zip(original.groups[0].layers, changed.groups[0].layers):
             np.testing.assert_array_equal(old.logistic_fit.coefficient, new.logistic_fit.coefficient)
             np.testing.assert_array_equal(old.refusal_fit.coefficient, new.refusal_fit.coefficient)
             np.testing.assert_array_equal(old.refusal_predictions, new.refusal_predictions)
         targets = np.full(40, -5.)
         constant = analysis.analyze_activations(replace(run, refusal_log_probability=-np.logaddexp(0, -targets),
-                                                       nonrefusal_log_probability=-np.logaddexp(0, targets)), include_adversarial=True)
+                                                       nonrefusal_log_probability=-np.logaddexp(0, targets)), include_adversarial=True, include_ridge=True)
         self.assertEqual(analysis.best_regression_layers(constant.groups[0]), [])
         self.assertFalse(analysis.selected_directions(constant)[2].valid)
         self.assertIsNone(constant.groups[0].layers[0].refusal_regression.r2)

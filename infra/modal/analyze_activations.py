@@ -13,7 +13,7 @@ app = modal.App("cs182-modal-analysis-cli")
 @app.local_entrypoint()
 def main(run_s3_uri: str = "", activation_root_s3_uri: str = "", output_s3_uri: str = "",
          project: str = "", region: str = "", folds: int = 5, seed: int = 0,
-         include_adversarial: bool = False, workers: int = 24, threads_per_worker: int = 1,
+         include_adversarial: bool = False, include_ridge: bool = False, workers: int = 24, threads_per_worker: int = 1,
          cpu: int = 0, memory: int = 65536, timeout: int = 3600):
     if run_s3_uri and activation_root_s3_uri:
         raise ValueError("Select either --run-s3-uri or --activation-root-s3-uri")
@@ -31,7 +31,7 @@ def main(run_s3_uri: str = "", activation_root_s3_uri: str = "", output_s3_uri: 
                    output_s3_uri=output_s3_uri or os.environ.get("ANALYSIS_URI", ""),
                    project=project or os.environ.get("CS182_PROJECT", "cs182-cddr"),
                    region=region or credentials["AWS_REGION"], folds=folds, seed=seed,
-                   include_adversarial=include_adversarial, workers=workers, threads_per_worker=threads_per_worker)
+                   include_adversarial=include_adversarial, include_ridge=include_ridge, workers=workers, threads_per_worker=threads_per_worker)
     if not run_s3_uri and not activation_root_s3_uri:
         options["activation_root_s3_uri"] = os.environ.get("OUTPUT_URI", "")
     worker_app = modal.App("cs182-project-analysis")

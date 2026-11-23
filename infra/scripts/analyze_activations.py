@@ -23,6 +23,7 @@ def main():
     parser.add_argument("--output-dir", type=Path, help="Retain local artifacts in addition to the S3 export")
     parser.add_argument("--output-s3-uri", help="Results prefix; defaults to ANALYSIS_URI or the project's analyses bucket")
     parser.add_argument("--include-adversarial", action="store_true")
+    parser.add_argument("--include-ridge", action="store_true", help="Fit per-layer Ridge models for the refusal metric")
     parser.add_argument("--workers", type=int, default=1)
     parser.add_argument("--threads-per-worker", type=int, default=1)
     args = parser.parse_args()
