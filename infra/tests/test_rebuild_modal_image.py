@@ -64,6 +64,13 @@ class RebuildModalImageTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertFalse(any("infra.modal.prepare_image" in command for command, _ in calls))
 
+    def test_lockfile_failure_stops_before_aws(self):
+        code, _, calls, _ = self.run_flow(fail=str(rebuild.ROOT / "infra/analysis-runtime"))
+        self.assertEqual(code, 1)
+        self.assertFalse(any(command[0] == "aws" for command, _ in calls))
+        checked = [command for command, _ in calls if command[:2] == ["uv", "lock"]]
+        self.assertEqual(len(checked), 2)
+
     def test_unexpected_build_uri_never_prepares(self):
         code, _, calls, _ = self.run_flow(build_output="another-image:release\n")
         self.assertEqual(code, 1)

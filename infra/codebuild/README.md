@@ -44,6 +44,18 @@ Use `--project`, `--region`, `--repository`, `--image-tag`, `--modal-profile`, o
 Git state. If preparation fails after publication, it prints commands to retry
 preparation without rebuilding or reusing an immutable tag.
 
+The wrapper checks both lockfiles before contacting AWS. After changing root
+package dependencies or extras, refresh both and commit the results:
+
+```bash
+uv lock
+uv lock --project infra/analysis-runtime
+```
+
+The analysis project depends on the root package by local path, so its lockfile
+also records the root package's metadata, including extras it does not install.
+A successful root `uv lock --check` alone does not validate the analysis lockfile.
+
 To run only the build trigger manually:
 
 ```bash
