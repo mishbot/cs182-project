@@ -28,8 +28,10 @@ def main(bucket: str = '', revision: str = MODEL_REVISION, prefix: str = '',
     destination = bucket or model_bucket(session, project=project or os.environ.get('CS182_PROJECT', 'cs182-cddr'),
                                         region=region or None)
     worker_app = modal.App('cs182-original-qwen-seed')
+    # Modal's default 512 GiB disk quota is ample for the model checkout.
+    # Explicit ephemeral_disk requests are only for increasing that quota.
     worker = worker_app.function(image=image, secrets=[modal.Secret.from_dict(aws_environment(session))],
-                                cpu=2, memory=2048, ephemeral_disk=20000, timeout=timeout,
+                                cpu=2, memory=2048, timeout=timeout,
                                 retries=0, serialized=True, include_source=False)(execute_seed)
     with modal.enable_output(), worker_app.run():
         print(worker.remote(destination, revision, prefix))
