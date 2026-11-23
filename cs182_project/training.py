@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING, Any
 from ._types import JsonObject, PathInput
 from .model_artifacts import MANIFEST, download_model, parse_s3_uri, publish_model_snapshot, sha256
 from .qwen_model import format_chat, load_model, load_tokenizer
+from .report_paths import label_report_path
 from .training_data import base_target, collate, training_prompts
 from .training_losses import training_step
 from .training_stats import TrainingStats, utc_now, write_json
@@ -150,7 +151,7 @@ def train(
 
     device = ("cuda" if torch.cuda.is_available() else "cpu") if device == "auto" else device
     run_id = f"{run_name}-{uuid.uuid4().hex}"
-    directory = Path(output_dir) / run_id
+    directory = label_report_path(Path(output_dir) / run_id, "defended")
     directory.mkdir(parents=True, exist_ok=False)
     metadata = {
         "schema_version": 1,

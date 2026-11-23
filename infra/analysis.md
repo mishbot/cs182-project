@@ -71,18 +71,36 @@ scatterplots from its saved analysis artifacts, run:
 
 ```bash
 uv run --locked --extra analysis python infra/scripts/regenerate_experiment_scatterplots.py \
-  reports/activations/experiment-TIMESTAMP.json
+  reports/activations/original-experiment-TIMESTAMP.json
 ```
 
 The script writes class-colored and refusal-metric-colored midpoint best-F1
 plots for both `original_analysis` and `orthogonalized_analysis` to
-`report_v1/images/experiment-EXPERIMENT_ID/`. Open `originalqwen_report.html`
-and `originalqwen_orthogonalized_report.html` from the same folder in a browser.
+`report_v1/images/ROLE-experiment-EXPERIMENT_ID/`. Open `ROLEqwen_report.html`
+and `ROLEqwen_orthogonalized_report.html` from the same folder in a browser.
+Here `ROLE` is `original` for the base Qwen snapshot and `defended` for its
+suffixed variant. Each experiment's orthogonalized snapshot uses the same role.
 The script prints both local paths before rendering the PNGs. The `analysis`
 extra includes Kaleido for Plotly PNG export, which requires Chrome or Chromium.
 Both analysis stages must be complete in the experiment JSON.
 
-It retains local artifacts in `reports/activations/RUN_ID/` and also publishes
+To generate a side-by-side TeX report from two completed experiments, run:
+
+```bash
+uv run --locked --extra analysis python infra/scripts/compare_activation_experiments.py \
+  reports/activations/original-experiment-TIMESTAMP.json \
+  reports/activations/defended-experiment-TIMESTAMP.json
+```
+
+The first checkpoint must use the original `Qwen-1_8B-Chat` snapshot. The
+second must use a suffixed model name such as `Qwen-1_8B-Chat-merged-EXAMPLE`.
+The script compares both orthogonalization states and prints the path to
+`comparison.tex`. The TeX and accompanying PNGs are written together under
+`report_v1/images/compare-original-ORIGINAL_ID-defended-DEFENDED_ID/` unless you pass
+`--output-dir`. Run `pdflatex comparison.tex` twice from that directory to
+resolve the citations.
+
+Local activation analysis retains artifacts in `reports/activations/ROLE-RUN_ID/` and publishes
 results to S3. `--output-dir` changes the local location. Local execution defaults
 to one worker and one numerical thread. Use `--workers` and
 `--threads-per-worker` to parallelize locally or on EC2. The old `--backend`

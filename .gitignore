@@ -238,3 +238,25 @@ crash.log
 # Generated activation-analysis reports and numerical results.
 /reports/activations/
 /reports/training/
+
+# LaTeX build output from report_v1.
+/report_v1/**/*.aux
+/report_v1/**/*.bbl
+/report_v1/**/*.bcf
+/report_v1/**/*.blg
+/report_v1/**/*.fdb_latexmk
+/report_v1/**/*.fls
+/report_v1/**/*.idx
+/report_v1/**/*.ilg
+/report_v1/**/*.ind
+/report_v1/**/*.lof
+/report_v1/**/*.log
+/report_v1/**/*.lot
+/report_v1/**/*.nav
+/report_v1/**/*.out
+/report_v1/**/*.pdf
+/report_v1/**/*.run.xml
+/report_v1/**/*.snm
+/report_v1/**/*.synctex.gz
+/report_v1/**/*.toc
+/report_v1/**/*.vrb

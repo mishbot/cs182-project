@@ -23,7 +23,8 @@ def atomic_save(path, value):
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, delete=False) as output:
+        with tempfile.NamedTemporaryFile(mode="w", dir=path.parent, prefix=f".{path.name}-",
+                                         delete=False) as output:
             temporary = output.name
             json.dump(value, output, indent=2, allow_nan=False)
             output.write("\n")

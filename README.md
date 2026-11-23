@@ -73,6 +73,8 @@ then collects and analyzes the edited model using the same sampling settings.
 It prints every command and streams logs. Expired AWS credentials trigger an
 interactive login prompt and a terminal bell. A JSON file under
 `reports/activations/` records each returned URI as the workflow progresses.
+Checkpoint names start with `original-experiment-` or `defended-experiment-`
+according to the experiment's starting model.
 Use `--dry-run` to preview commands without authentication, execution, or file writes;
 `--modal-profile mishbot` selects that Modal workspace for every step.
 

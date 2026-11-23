@@ -322,6 +322,28 @@ def render_scatterplot_pngs(
     return written
 
 
+def analysis_stages(
+    experiment: JsonObject, *, name_prefix: str = "originalqwen"
+) -> list[tuple[str, str]]:
+    """Return both required analysis stage names and their report filename prefixes."""
+    stages = experiment.get("stages")
+    if not isinstance(stages, dict):
+        raise TypeError("Experiment JSON has no stages object.")
+    result = []
+    for stage, prefix in (
+        ("original_analysis", name_prefix),
+        ("orthogonalized_analysis", f"{name_prefix}_orthogonalized"),
+    ):
+        state = stages.get(stage)
+        if not isinstance(state, dict) or state.get("status") != "complete":
+            raise ValueError(f"Experiment stage {stage} is not complete.")
+        uri = experiment.get(stage)
+        if not isinstance(uri, str) or not uri:
+            raise ValueError(f"Experiment stage {stage} has no result URI.")
+        result.append((stage, prefix))
+    return result
+
+
 def download_analysis_plot_artifacts(s3: S3Client, report_uri: str) -> tuple[JsonObject, bytes]:
     """Download and verify the numerical artifacts belonging to a published report URI."""
     from .analysis_directions import _artifacts, _verified_artifact, json_object, read_object

@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 from infra.modal._experiment import STAGES, atomic_save
 from cs182_project.model_artifacts import parse_s3_uri
+from cs182_project.report_paths import is_report_path, label_report_path, model_role
 ENVIRONMENT_KEYS = ("CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI", "TRAINING_STATS_URI")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONFIGURATION_KEYS = ("dataset", "sample_size", "seed", "batch_size", "max_input_tokens", "folds",
@@ -125,7 +126,7 @@ def main():
     parser.add_argument("--partition-dataset", action="store_true", help="Publish/verify the default dataset partition first")
     parser.add_argument("--partition-s3-uri", help="Use the same custom partition for both collections")
     parser.add_argument("--remote-login", action="store_true", help="Use the AWS login helper's --remote browser flow")
-    parser.add_argument("--results-file", type=Path, help="Incremental URI summary; defaults to reports/activations/experiment-TIMESTAMP.json")
+    parser.add_argument("--results-file", type=Path, help="Incremental URI summary; defaults to reports/activations/ROLE-experiment-TIMESTAMP.json")
     parser.add_argument("--resume", type=Path, help="Resume a saved experiment, verifying and skipping completed stages")
     parser.add_argument("--adopt-stage", action="append", default=[], metavar="STAGE=URI",
                         help="Explicitly adopt a completed output when recovering a legacy/lost result (requires --resume)")
@@ -165,6 +166,22 @@ def main():
     results_path = (args.resume or args.results_file or Path("reports/activations") / f"experiment-{timestamp}.json").expanduser()
     if not results_path.is_absolute():
         results_path = ROOT / results_path
+    role = None
+    if is_report_path(results_path):
+        saved = restored or {}
+        model_uri = (
+            saved.get("original_model")
+            or saved.get("environment", {}).get("MODEL_URI")
+            or args.model_s3_uri
+        )
+        try:
+            role = model_role(model_uri) if model_uri else "original"
+        except ValueError as error:
+            parser.error(str(error))
+        labeled_path = label_report_path(results_path, role)
+        if args.resume and labeled_path != results_path:
+            parser.error(f"Rename the checkpoint and its lock to match the model role before resuming: {labeled_path}")
+        results_path = labeled_path
     if not args.resume and results_path.exists():
         parser.error("Results file already exists; use --resume or choose another --results-file")
     adoptions = {}
@@ -289,6 +306,8 @@ def main():
                     raise RuntimeError("Environment discovery did not print its six configuration fields.")
             environment.update(zip(ENVIRONMENT_KEYS, values))
         env.update(environment)
+        if role is not None and model_role(env["MODEL_URI"]) != role:
+            raise ValueError(f"Discovered model does not match the checkpoint path role {role}.")
         remember("original_model", env["MODEL_URI"])
         remember("dataset", env["DATASET_URI"])
         remember("runtime_image", env["CS182_MODAL_IMAGE"])

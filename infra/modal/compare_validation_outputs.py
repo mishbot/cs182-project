@@ -9,6 +9,7 @@ from tempfile import NamedTemporaryFile
 import modal
 
 from cs182_project.model_artifacts import parse_s3_uri
+from cs182_project.report_paths import label_report_path, model_role
 from cs182_project.validation_comparison import validation_comparison_tex
 from infra.modal._runner import run_task
 
@@ -73,10 +74,11 @@ def main(
             "or pass --runtime-image explicitly."
         )
     options = comparison_inputs(experiment)
+    role = model_role(options["model_s3_uri"])
     destination = (
-        Path(output).expanduser()
+        label_report_path(Path(output).expanduser(), role)
         if output
-        else Path("report_v1") / f"validation-comparison-{experiment_id}.tex"
+        else Path("report_v1") / f"{role}-validation-comparison-{experiment_id}.tex"
     )
     results = run_task(
         "compare_validation_outputs",
@@ -89,7 +91,8 @@ def main(
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
-        with NamedTemporaryFile(mode="w", dir=destination.parent, encoding="utf-8", delete=False) as file:
+        with NamedTemporaryFile(mode="w", dir=destination.parent, prefix=f".{destination.name}-",
+                                encoding="utf-8", delete=False) as file:
             temporary = Path(file.name)
             file.write(document)
         temporary.replace(destination)

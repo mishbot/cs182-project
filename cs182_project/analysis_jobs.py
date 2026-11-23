@@ -15,6 +15,7 @@ from typing import TYPE_CHECKING
 from ._types import JsonObject, PathInput
 from .activation_runs import activation_root, latest_activation_run, load_activation_run
 from .model_artifacts import parse_s3_uri, sha256
+from .report_paths import analysis_model_role, is_report_path, label_report_path
 
 if TYPE_CHECKING:
     from boto3.session import Session
@@ -149,6 +150,13 @@ def run_analysis(
     uri = run_s3_uri or latest_activation_run(s3, root or "")
     run = load_activation_run(s3, uri)
     timings["download"] = time.perf_counter() - started
+    directory = (
+        Path(output_dir).expanduser()
+        if output_dir is not None
+        else Path("reports/activations") / run.manifest["run_id"]
+    )
+    if is_report_path(directory):
+        directory = label_report_path(directory, analysis_model_role(run.manifest["model"]))
     started = time.perf_counter()
     result = analyze_activations(
         run,
@@ -176,11 +184,6 @@ def run_analysis(
         "execution": execution,
         "timings_seconds": timings,
     }
-    directory = (
-        Path(output_dir)
-        if output_dir is not None
-        else Path("reports/activations") / run.manifest["run_id"]
-    )
     started = time.perf_counter()
     write_analysis_report(result, directory, execution=execution)
     timings["render"] = time.perf_counter() - started

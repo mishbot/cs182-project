@@ -227,19 +227,19 @@ and dataset snapshots recorded in the experiment checkpoint. Pass
 
 ```bash
 uv run --locked --extra modal modal run infra/modal/compare_validation_outputs.py \
-  --experiment-json reports/activations/experiment-TIMESTAMP.json
+  --experiment-json reports/activations/original-experiment-TIMESTAMP.json
 ```
 
 ```bash
 uv run --locked --extra modal modal run infra/modal/compare_validation_outputs.py \
-  --experiment-json reports/activations/experiment-TIMESTAMP.json \
+  --experiment-json reports/activations/original-experiment-TIMESTAMP.json \
   --runtime-image "$CS182_MODAL_IMAGE"
 ```
 
 By default it selects five harmful and five harmless validation prompts with
 seed 0. Both models receive the same prompts and generate up to 128 new tokens
 per response. The command writes a standalone report to
-`report_v1/validation-comparison-EXPERIMENT_ID.tex`, which you can compile with
+`report_v1/ROLE-validation-comparison-EXPERIMENT_ID.tex`, which you can compile with
 LuaLaTeX. Use `--samples-per-class`, `--seed`, `--gpu`, or `--output` to change
 the defaults. Source `infra/modal/env.sh` first to discover the latest image.
 
@@ -323,10 +323,10 @@ Keep the experiment JSON printed by the wrapper, then run:
 
 ```bash
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
-  --resume reports/activations/experiment-TIMESTAMP.json
+  --resume reports/activations/original-experiment-TIMESTAMP.json
 # Preview recovery without contacting AWS/Modal or changing the checkpoint:
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
-  --resume reports/activations/experiment-TIMESTAMP.json --dry-run
+  --resume reports/activations/original-experiment-TIMESTAMP.json --dry-run
 ```
 
 Resume restores the exact image, model, dataset, partition, and experiment
@@ -354,7 +354,7 @@ result can require explicit adoption:
 
 ```bash
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
-  --resume reports/activations/experiment-TIMESTAMP.json \
+  --resume reports/activations/original-experiment-TIMESTAMP.json \
   --adopt-stage original_activations=s3://ACTIVATIONS_BUCKET/runs/RUN_ID/manifest.json
 ```
 
@@ -487,7 +487,7 @@ Both entrypoints accept `--model-s3-uri`, `--dataset-s3-uri`,
 `--partition-s3-uri`, `--stats-s3-uri`, and `--model-output-s3-uri`. Override
 defaults with, for example,
 `--config-json '{"steps":100,"stats_every_steps":10,"stats_flush_seconds":30}'`.
-Local output defaults to `reports/training/`; local training also accepts
+Local output defaults to `reports/training/defended-RUN_ID/`. Local training also accepts
 `--output-dir` and `--device`. Configuration defaults live in
 `cs182_project.training`.
 
