@@ -17,7 +17,6 @@
 We reproduced the experimental setup by Arditi et. al for evaluation, with the following differences:
 \begin{itemize}
     \item Although we use the same datasets, we sample from them differently to make sure that it is possible to reproduce their results with a different random sample.
-    \item We replace their direction selection algorithm with a simpler approach that chooses the refusal direction from the layer that most effectively separates refusal from non-refusal using the decision boundary that is equidistant from the mean harmful activation and mean harmless activation.
-    \item 
+    \item We replace their direction selection algorithm with a simpler approach that chooses the refusal direction from the layer that most effectively separates refusal from non-refusal using the decision boundary that is equidistant from the mean harmful activation and mean harmless activation. The motivation from this deviation from the paper is to reduce compute cost associated with doing forward passes to evaluate bypass\_metric, induce\_metric, and kl\_divergence.
 \end{itemize}
 \end{document}
