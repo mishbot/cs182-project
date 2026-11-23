@@ -14,15 +14,25 @@
 \setlength{\bibitemsep}{1pt}
 \begin{document}
 
-We reproduced the experimental setup by Arditi et. al for evaluation, with the following differences:
+We adapted the \href{https://arxiv.org/html/2406.11717v3}{experimental setup of Arditi et al.\ (2024)} to compare the original and defended Qwen-1.8B-Chat models before and after weight orthogonalization. The main differences are as follows.
 \begin{itemize}
-    \item Although we use the same datasets, we sample from them differently to make sure that it is possible to reproduce their results with a different random sample.
-    \item We replace their direction selection algorithm with a simpler approach that chooses the refusal direction from the layer that most effectively separates refusal from non-refusal using the decision boundary that is equidistant from the mean harmful activation and mean harmless activation. The motivation from this deviation from the paper is to reduce compute cost associated with doing forward passes to evaluate bypass\_metric, induce\_metric, and kl\_divergence.
+    \item \textbf{Dataset splits and sampling.} We reuse the paper's training sources (AdvBench, MaliciousInstruct, TDC2023, and Alpaca) and form our own approximately 80/20 train and validation split, keeping exact duplicates together. We draw a balanced sample of unique harmful and harmless prompts from the training partition without per-source quotas. The paper instead uses HarmBench for harmful validation and separate evaluation sets, including JailbreakBench (Appendix A). We have not evaluated across additional unseen datasets due to lack of time.
+
+    \item \textbf{Prompt eligibility.} The \href{https://github.com/andyrdt/refusal_direction/blob/main/pipeline/run_pipeline.py}{reference pipeline} filters its training and validation samples by default, keeping harmful prompts with positive baseline refusal log-odds and harmless prompts with negative log-odds. Our activation analysis keeps prompts whose refusal metric disagrees with their harm label. This lets those prompts count as errors when we evaluate refusal as a detector of harmful input. This difference simplifies the data cleaning pipeline while still allowing to reproduce the paper's results on the undefended model.
+
+    \item \textbf{Chat template and activation position.} We use Qwen's ChatML formatter with the system message \textit{You are a helpful assistant.} The \href{https://github.com/andyrdt/refusal_direction/blob/main/pipeline/model_utils/qwen_model.py}{reference Qwen pipeline} omits the system message for direction extraction. It \href{https://github.com/andyrdt/refusal_direction/blob/main/pipeline/submodules/generate_directions.py}{searches multiple post-instruction token positions at decoder block inputs}. We capture the final formatted input token at each decoder block output before the model's final normalization. A block output corresponds to the next block's input, so the layer indices are offset by one.
+
+    \item \textbf{Direction selection.} We rank eligible layers by pooled out-of-fold F1 for predicting the prompt's harm label using the decision boundary halfway between the two mean activations. We use stratified five-fold cross-validation by default and refit the class means on the full analysis sample for the selected direction. This reuses the captured activations and avoids the additional model passes that the paper uses to score candidate interventions on a separate validation set (Appendix C.1). We retain the reference implementation's restriction on late layers, adjusting for the layer indexing convention. The motivation of these differences is to reduce the compute cost associated with additional forward passes. We found that even with these gates omitted, orthogonalization still resulted in a model that produces similar outputs to the original model.
+
+    \item \textbf{Refusal evaluation.} We use the paper's next-token log-odds proxy and Qwen refusal token set (Appendix B). Our comparison tables treat positive log-odds as a prediction that the input is harmful. The paper's main completion evaluations instead use refusal substring matching and a separate safety judgment on generated responses (Section 2.5). Our qualitative validation report shows up to 128 generated tokens per response, compared with the paper's 512-token evaluation cap. These changes allow to reduce compute costs by generating only the first next-token distribution and generating shorter responses.
+
+    % \item \textbf{Qwen weight editing.} We follow the paper's weight orthogonalization approach (Section 4.1), including the projection of the embedding and the attention and MLP output weights. Our implementation also projects any biases in those output layers. If the input embedding and language-model head share weights, we preserve the original head in a separate copy. The reference Qwen weight-editing function projects the weight matrices.
 \end{itemize}
-\end{document}
 
 We also experimented with alternative ways, including logistic regression and ridge-regularized linear regression, to choose the refusal direction besides using the mean activation in response harmful and harmless inputs.
     
 We chose not to use the refusal direction based on ridge-regularized linear regression on refusal score as a function of activation because the predictor we obtained by this method did not attain high precision and recall as a detector of harmful inputs in comparison to the other two predictors.
 
 Logistic regression results in the strongest separator between the two classes. However, both logistic regression and difference-of-means-based selection of refusal direction can attain over 99 percent precision and recall as harmful input detectors. We therefore used the difference of means for consistency with the original paper by Arditi et al.
+
+\end{document}

@@ -1,0 +1,21 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.65in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,enumitem,xcolor,hyperref,microtype,titlesec}
+\usepackage[backend=biber,style=authoryear,maxcitenames=1,maxbibnames=1,giveninits=true,uniquename=false,doi=false,url=false]{biblatex}
+\addbibresource{references.bib}
+\hypersetup{colorlinks=true,citecolor=black,urlcolor=blue!55!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\titleformat{\section}{\normalsize\bfseries}{}{0pt}{}
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\setlist[itemize]{leftmargin=*,nosep,topsep=2pt}
+\renewcommand*{\bibfont}{\footnotesize}
+\setlength{\bibitemsep}{1pt}
+\begin{document}
+
+\section{Discussion}
+
+We found that after orthogonalization, activations associated with the harmful and harmless classes remain separated at some layer of the model, albeit by a smaller distance, regardless of whether the model is defended. However, orthogonalization had a smaller effect on activations in the defended model, and correspondingly, we observed little change in the defended model's behavior after orthogonalization. This suggests that our proposed defense can be effective at blocking a low-cost variant of the weight orthogonalization technique originally proposed by Arditi et al., thereby increasing the cost of jailbreaking the model.
+
+\end{document}

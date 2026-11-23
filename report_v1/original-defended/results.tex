@@ -43,4 +43,7 @@ defended model & Orthogonalized & 0.952 & 0.930 & 0.941 \\
 
 Before orthogonalization, the two models have comparable precision, and the defended model has higher recall (94.5\% versus 87.5\%). For the original model, recall falls from 87.5\% to 7.8\% and F1 falls from 0.914 to 0.140 after orthogonalization. This matches the shift of harmful inputs below zero and indicates strong attenuation of refusal on harmful prompts by this first-token measure. Recall for the defended model falls from 94.5\% to 93.0\%, and its precision stays near 95\%. Its histograms and detector scores show much less attenuation under the same measure.
 
+\paragraph{Qualitative validation responses.}
+Both models explicitly refused all five sampled harmful prompts before orthogonalization. After orthogonalization, the defended model still refused all five. The original model began complying with four and redirected the fifth to defensive advice. Both models continued to answer all five harmless prompts after orthogonalization, though their wording and creative choices sometimes changed. For example, all four model variants gave the same correct answer to the arithmetic prompt. These excerpts agree with the detector results on the relative attenuation of refusal and illustrate the behavior on a small, shared sample of validation prompts.
+
 \end{document}
