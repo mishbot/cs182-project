@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import random
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from ._types import JsonObject, PathInput
 from .activations import next_token_statistics
@@ -70,7 +70,7 @@ def base_target(
 ) -> Example | None:
     import torch
 
-    encoded = format_chat(tokenizer, prompt)["input_ids"]
+    encoded = cast(list[int], format_chat(tokenizer, prompt)["input_ids"])
     if len(encoded) > 256:
         return None
     ids = torch.tensor([encoded], device=model.device)

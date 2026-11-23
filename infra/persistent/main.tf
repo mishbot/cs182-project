@@ -170,16 +170,16 @@ resource "aws_budgets_budget" "project" {
 output "dev_server_inputs" {
   description = "Export with tofu output -json dev_server_inputs to the dev-server .auto.tfvars.json file."
   value = {
-    region            = var.region
-    availability_zone = aws_ebs_volume.data.availability_zone
-    project           = var.project
-    model_bucket      = aws_s3_bucket.storage["models"].id
-    dataset_bucket    = aws_s3_bucket.storage["datasets"].id
-    activation_bucket = aws_s3_bucket.storage["activations"].id
-    analysis_bucket   = aws_s3_bucket.storage["analyses"].id
+    region                = var.region
+    availability_zone     = aws_ebs_volume.data.availability_zone
+    project               = var.project
+    model_bucket          = aws_s3_bucket.storage["models"].id
+    dataset_bucket        = aws_s3_bucket.storage["datasets"].id
+    activation_bucket     = aws_s3_bucket.storage["activations"].id
+    analysis_bucket       = aws_s3_bucket.storage["analyses"].id
     training_stats_bucket = aws_s3_bucket.storage["training-stats"].id
-    ecr_repository    = aws_ecr_repository.runtime.name
-    data_volume_id    = aws_ebs_volume.data.id
+    ecr_repository        = aws_ecr_repository.runtime.name
+    data_volume_id        = aws_ebs_volume.data.id
   }
 }
 

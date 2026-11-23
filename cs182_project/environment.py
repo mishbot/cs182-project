@@ -9,7 +9,14 @@ from typing import TYPE_CHECKING
 
 from ._types import JsonObject
 from .dataset_artifacts import CORPUS_ID, CORPUS_NAME, DATASET_ID, validate_dataset_manifest
-from .model_artifacts import MANIFEST, MODEL_ID, MODEL_NAME, MODEL_REVISION, validate_manifest
+from .model_artifacts import (
+    MANIFEST,
+    MODEL_ID,
+    MODEL_NAME,
+    MODEL_REVISION,
+    parse_s3_uri,
+    validate_manifest,
+)
 
 if TYPE_CHECKING:
     from datetime import datetime
@@ -98,6 +105,7 @@ def discover_modal_environment(
     project: str = "cs182-cddr",
     region: str | None = None,
     dataset: str = "refusal-direction",
+    model_s3_uri: str | None = None,
 ) -> dict[str, str]:
     """Resolve shell variables without requiring local OpenTofu state.
 
@@ -110,6 +118,11 @@ def discover_modal_environment(
         raise ValueError(
             "Project must be 3–30 lowercase letters, digits, or hyphens, beginning with a letter."
         )
+    if model_s3_uri:
+        model_s3_uri = model_s3_uri.rstrip("/")
+        model_bucket, model_prefix = parse_s3_uri(model_s3_uri)
+    else:
+        model_bucket, model_prefix = "", ""
     region = region or session.region_name or os.environ.get("AWS_REGION") or "us-east-1"
     if not re.fullmatch(r"[a-z0-9-]+", region):
         raise ValueError("Invalid AWS region.")
@@ -119,19 +132,24 @@ def discover_modal_environment(
     prefix = f"{project}-{account}-{region}"
     s3 = session.client("s3", region_name=region)
     ecr = session.client("ecr", region_name=region)
-    model_prefix = f"models/{MODEL_NAME}/{MODEL_REVISION}"
-    model_bucket = f"{prefix}-models"
+    if not model_s3_uri:
+        model_prefix = f"models/{MODEL_NAME}/{MODEL_REVISION}"
+        model_bucket = f"{prefix}-models"
     model_key = f"{model_prefix}/{MANIFEST}"
     try:
         model = _read_manifest(s3, model_bucket, model_key)
     except s3.exceptions.NoSuchKey as error:
+        if model_s3_uri:
+            raise ValueError(
+                f"Selected model has no completion manifest: {model_s3_uri}/{MANIFEST}"
+            ) from error
         raise ValueError(
             f"The pinned original Qwen model is not seeded: s3://{model_bucket}/{model_key}. "
             "Run infra/scripts/run_qwen_experiment.py with --seed-model to seed it on Modal "
             "before discovery, or run infra/modal/seed_model.py separately."
         ) from error
     validate_manifest(model)
-    if (
+    if not model_s3_uri and (
         model.get("model_id") != MODEL_ID
         or model.get("revision") != MODEL_REVISION
         or model.get("upstream", {}).get("provider") != "modelscope"
@@ -141,7 +159,7 @@ def discover_modal_environment(
         )
     return {
         "CS182_MODAL_IMAGE": _latest_image(ecr, f"{project}-runtime"),
-        "MODEL_URI": f"s3://{prefix}-models/{model_prefix}",
+        "MODEL_URI": f"s3://{model_bucket}/{model_prefix}",
         "DATASET_URI": _latest_dataset(s3, f"{prefix}-datasets", dataset),
         "OUTPUT_URI": f"s3://{prefix}-activations/runs",
         "ANALYSIS_URI": f"s3://{prefix}-analyses/runs",

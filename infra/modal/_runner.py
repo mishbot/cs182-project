@@ -86,14 +86,15 @@ def runtime_image(reference):
 
 
 def execute_analysis(options, *, capture_result=False):
-    """Use the image's isolated GPU environment; inherit stdout/stderr for Modal streaming."""
+    """Use the image's CPU analysis environment; inherit stdout/stderr for Modal streaming."""
     # Keep the worker in the uploaded package: a CLI file loaded by basename
     # would collide with the image's unrelated /app/analyze_activations.py.
     import subprocess
 
-    with tempfile.TemporaryDirectory(prefix="cs182-gpu-analysis-") as directory:
-        command = ["/app/.analysis-venv/bin/python", "/app/analyze_activations.py",
-                   "--backend", "cuml", "--output-dir", directory]
+    with tempfile.TemporaryDirectory(prefix="cs182-cpu-analysis-") as directory:
+        command = ["/app/.venv/bin/python", "/app/analyze_activations.py",
+                   "--output-dir", directory]
+        options = {"workers": 24, "threads_per_worker": 1, **options}
         for key, value in options.items():
             if value is None or value == "":
                 continue
@@ -103,7 +104,10 @@ def execute_analysis(options, *, capture_result=False):
             else:
                 command.extend(["--" + key.replace("_", "-"), str(value)])
         # Avoid leaking the parent's venv selection into the subprocess's libraries.
-        environment = {**os.environ, "VIRTUAL_ENV": "/app/.analysis-venv"}
+        environment = {**os.environ, "VIRTUAL_ENV": "/app/.venv"}
+        for variable in ("OPENBLAS_NUM_THREADS", "OMP_NUM_THREADS", "MKL_NUM_THREADS",
+                         "BLIS_NUM_THREADS", "VECLIB_MAXIMUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            environment[variable] = str(options["threads_per_worker"])
         if not capture_result:
             subprocess.run(command, check=True, env=environment)
             return None
@@ -143,10 +147,12 @@ def execute_task(task, options):
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     snapshots = [("models", options["model_s3_uri"])]
-    if task == "collect_activations":
+    if task in {"collect_activations", "compare_validation_outputs"}:
         snapshots.append(("datasets", options["dataset_s3_uri"]))
     elif task not in {"infer", "orthogonalize_model"}:
         raise ValueError(f"Unknown task: {task}")
+    if task == "compare_validation_outputs":
+        snapshots.append(("models", options["orthogonalized_model_s3_uri"]))
     volume = modal.Volume.from_name(CACHE_VOLUME)
     s3 = boto3.client("s3")
     with tempfile.TemporaryDirectory(prefix="cs182-snapshots-") as working:
@@ -166,6 +172,11 @@ def execute_task(task, options):
                 from cs182_project.weight_orthogonalization import orthogonalize_model
 
                 return orthogonalize_model(s3, cache_dir=working, **options)
+            if task == "compare_validation_outputs":
+                from cs182_project.validation_comparison import compare_validation_outputs
+
+                comparison_options = {key: value for key, value in options.items() if key != "device"}
+                return compare_validation_outputs(s3, cache_dir=working, **comparison_options)
             from cs182_project.activations import collect
 
             return collect(s3, cache_dir=working, **options)
@@ -179,17 +190,20 @@ def execute_task(task, options):
                 logger.warning("Could not persist the snapshot cache", exc_info=True)
 
 
-def run_task(task, options, *, gpu="T4", timeout=3600):
+def run_task(task, options, *, gpu="T4", timeout=3600, reference=None, region=None):
     """Create an ephemeral GPU App after the local CLI has validated its inputs."""
     import boto3
 
     if not 1 <= timeout <= 86400:
         raise ValueError("--timeout must be between 1 and 86400 seconds")
-    reference = os.environ.get("CS182_MODAL_IMAGE", "")
+    reference = reference or os.environ.get("CS182_MODAL_IMAGE", "")
     if not reference:
         raise ValueError("Set CS182_MODAL_IMAGE to the ECR runtime image URI.")
-    credentials = aws_environment(boto3.Session())
+    session = boto3.Session(region_name=region) if region else boto3.Session()
+    credentials = aws_environment(session)
     image = runtime_image(reference)
+    if task == "compare_validation_outputs":
+        image = image.add_local_python_source("cs182_project")
     volume = modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True, version=2)
     volumes = {CACHE_MOUNT: volume}
     if task == "train_defense":
@@ -201,7 +215,7 @@ def run_task(task, options, *, gpu="T4", timeout=3600):
         volumes=volumes,
         gpu=None if options["device"] == "cpu" else gpu,
         cpu=2,
-        memory=16384,
+        memory=32768 if task == "train_defense" else 16384,
         timeout=timeout,
         retries=0,
         serialized=True,

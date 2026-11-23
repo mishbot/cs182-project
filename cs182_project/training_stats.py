@@ -102,9 +102,10 @@ class TrainingStats:
         """Seal on disk before networking; leave unsuccessful objects for retry."""
         with self._flush_lock:
             self._seal()
-            self.persist()
+            self._persist()
             files = [self.directory / "run.json", self.directory / "summary.json"]
             files.extend(Path(path) for path in self.pending())
+            failed_metadata: list[str] = []
             for path in files:
                 if not path.exists():
                     continue
@@ -121,11 +122,19 @@ class TrainingStats:
                     )
                 except Exception:
                     logger.warning("Statistics upload pending: %s", path, exc_info=True)
+                    if path.suffix != ".jsonl":
+                        failed_metadata.append(str(path))
                 else:
                     if path.suffix == ".jsonl":
                         path.with_suffix(".sent").touch()
+            self._persist()
+            return self.pending() + failed_metadata
+
+    def _persist(self) -> None:
+        try:
             self.persist()
-            return self.pending()
+        except Exception:
+            logger.exception("Could not commit training outputs; will retry on the next flush")
 
     def _upload_loop(self) -> None:
         while not self._stop.wait(self.interval):

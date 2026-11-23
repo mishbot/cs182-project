@@ -47,7 +47,7 @@ class ModalAnalysisTest(unittest.TestCase):
             sys.modules["analyze_activations"] = image_script
             self.assertIs(deserialize(payload, None), runner.execute_analysis)
 
-    def test_gpu_entrypoint_uses_prepared_image_and_forwards_selection(self):
+    def test_cpu_entrypoint_uses_prepared_image_and_forwards_selection(self):
         app = MagicMock()
         app.run.return_value = nullcontext()
         worker = MagicMock()
@@ -64,8 +64,9 @@ class ModalAnalysisTest(unittest.TestCase):
         options = worker.remote.call_args.args[0]
         self.assertTrue(options['include_adversarial'])
         self.assertEqual(options['output_s3_uri'], 's3://analyses/runs')
-        self.assertEqual(app.function.call_args.kwargs['gpu'], 'A100-40GB')
-        self.assertEqual(app.function.call_args.kwargs['memory'], 32768)
+        self.assertNotIn('gpu', app.function.call_args.kwargs)
+        self.assertEqual(app.function.call_args.kwargs['cpu'], 24)
+        self.assertEqual(app.function.call_args.kwargs['memory'], 65536)
         self.assertNotIn('volumes', app.function.call_args.kwargs)
         app.run.assert_called_once_with(detach=True)
 
@@ -90,17 +91,18 @@ class ModalAnalysisTest(unittest.TestCase):
             worker.remote.assert_called_once()
             self.assertEqual(stdout.getvalue(), "s3://models/snapshot\n")
 
-    def test_worker_uses_isolated_python_and_streams_logs(self):
+    def test_worker_uses_cpu_python_and_streams_logs(self):
         with patch('subprocess.run') as run:
             analyze_activations.execute_analysis(dict(run_s3_uri='s3://activations/runs/fixture',
                                                      folds=5, include_adversarial=True))
         command = run.call_args.args[0]
-        self.assertEqual(command[0], '/app/.analysis-venv/bin/python')
-        self.assertEqual(command[command.index('--backend') + 1], 'cuml')
+        self.assertEqual(command[0], '/app/.venv/bin/python')
+        self.assertEqual(command[command.index('--workers') + 1], '24')
+        self.assertEqual(run.call_args.kwargs['env']['OPENBLAS_NUM_THREADS'], '1')
         self.assertIn('--include-adversarial', command)
         self.assertTrue(run.call_args.kwargs['check'])
         self.assertNotIn('capture_output', run.call_args.kwargs)
-        self.assertEqual(run.call_args.kwargs['env']['VIRTUAL_ENV'], '/app/.analysis-venv')
+        self.assertEqual(run.call_args.kwargs['env']['VIRTUAL_ENV'], '/app/.venv')
 
 
 class SnapshotCacheTest(unittest.TestCase):

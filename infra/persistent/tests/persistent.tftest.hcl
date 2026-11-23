@@ -64,6 +64,10 @@ variables {
 run "persistent_resources" {
   command = plan
   assert {
+    condition     = aws_s3_bucket.storage["training-stats"].bucket == "cs182-cddr-123456789012-us-east-1-training-stats" && output.training_stats_bucket == aws_s3_bucket.storage["training-stats"].id && !aws_s3_bucket.storage["training-stats"].force_destroy && output.dev_server_inputs.training_stats_bucket == aws_s3_bucket.storage["training-stats"].id
+    error_message = "Export a dedicated training-statistics bucket without forced destruction."
+  }
+  assert {
     condition     = aws_s3_bucket.storage["analyses"].bucket == "cs182-cddr-123456789012-us-east-1-analyses" && output.analysis_bucket == aws_s3_bucket.storage["analyses"].id && !aws_s3_bucket.storage["analyses"].force_destroy
     error_message = "Add the dedicated analyses bucket without permitting forced destruction."
   }

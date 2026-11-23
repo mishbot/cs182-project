@@ -237,3 +237,4 @@ crash.log
 
 # Generated activation-analysis reports and numerical results.
 /reports/activations/
+/reports/training/

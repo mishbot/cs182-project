@@ -13,11 +13,15 @@ def main():
     parser.add_argument("--project", default=os.environ.get("CS182_PROJECT", "cs182-cddr"))
     parser.add_argument("--dataset", choices=["refusal-direction", "wildguardmix"], default="refusal-direction")
     parser.add_argument("--region", help="Defaults to the current AWS session's region")
+    parser.add_argument("--model-s3-uri", help="Use this completed model snapshot instead of the original Qwen model")
     args = parser.parse_args()
     try:
         import boto3
 
-        values = discover_modal_environment(boto3.Session(), project=args.project, region=args.region, dataset=args.dataset)
+        options = dict(project=args.project, region=args.region, dataset=args.dataset)
+        if args.model_s3_uri:
+            options["model_s3_uri"] = args.model_s3_uri
+        values = discover_modal_environment(boto3.Session(), **options)
         ordered = [values[name] for name in ["CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI", "TRAINING_STATS_URI"]]
         if any(not value or any(char in value for char in "\t\r\n") for value in ordered):
             raise ValueError("Discovered values must be nonempty single-line strings.")

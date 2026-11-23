@@ -68,10 +68,7 @@ def main():
         revision = run(["git", "rev-parse", "--short", "HEAD"]).stdout.strip() or "SHORT_SHA"
         tag = args.image_tag or f"dev-{revision}-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')}"
 
-        # The analysis project locks root-package metadata independently.
-        # Root dependency edits can invalidate it even for unselected extras.
-        for project in (ROOT, ROOT / "infra/analysis-runtime"):
-            run(["uv", "lock", "--project", str(project), "--check"])
+        run(["uv", "lock", "--project", str(ROOT), "--check"])
 
         identity = run(["aws", "sts", "get-caller-identity"], check=False)
         if identity.returncode:

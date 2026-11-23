@@ -9,9 +9,6 @@
 !infra/container/Dockerfile
 !infra/scripts/
 !infra/scripts/*.py
-!infra/analysis-runtime/
-!infra/analysis-runtime/pyproject.toml
-!infra/analysis-runtime/uv.lock
 !cs182_project/third_party/
 !cs182_project/third_party/refusal_direction/
 !cs182_project/third_party/refusal_direction/LICENSE

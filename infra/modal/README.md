@@ -218,6 +218,23 @@ References: [existing images](https://modal.com/docs/guide/existing-images),
 [Volumes](https://modal.com/docs/guide/volumes), and
 [terminal logs](https://modal.com/docs/guide/developing-debugging).
 
+## Compare generated responses on validation prompts
+
+Run this command from the repository root after signing in to AWS and Modal.
+It uses the runtime image and snapshots recorded in the experiment checkpoint.
+
+```bash
+uv run --locked --extra modal modal run infra/modal/compare_validation_outputs.py \
+  --experiment-json reports/activations/experiment-TIMESTAMP.json
+```
+
+By default it selects five harmful and five harmless validation prompts with
+seed 0. Both models receive the same prompts and generate up to 128 new tokens
+per response. The command writes a standalone report to
+`report_v1/validation-comparison-EXPERIMENT_ID.tex`, which you can compile with
+LuaLaTeX. Use `--samples-per-class`, `--seed`, `--gpu`, or `--output` to change
+the defaults.
+
 ## GPU activation analysis
 
 After applying the analyses-bucket infrastructure, rebuilding the ECR image, and
@@ -229,12 +246,13 @@ uv run --locked --extra modal modal run infra/modal/analyze_activations.py
 uv run --locked --extra modal modal run infra/modal/analyze_activations.py --include-adversarial
 ```
 
-The worker uses one A100-40GB, four CPU cores, and 32 GiB RAM by default. Override
-`--gpu`, `--memory` (MiB), or `--timeout`. It uses the same prepared ECR image but
-launches `/app/.analysis-venv/bin/python` to keep cuML/CUDA dependencies isolated
-from inference. No activation inputs are downloaded to your workstation. GPU
-startup fails explicitly without a working accelerator; dispatch/fallback logs
-stream to your terminal.
+The worker uses 24 CPU worker processes with one numerical thread each, 24
+requested CPU cores, and 64 GiB RAM by default. Override `--workers`,
+`--threads-per-worker`, `--cpu`, `--memory` (MiB), or `--timeout`. CPU requests
+otherwise equal workers × threads. It runs ordinary scikit-learn in the same
+prepared ECR image's `/app/.venv`, without a GPU or cuML. Inputs are downloaded
+once on Modal and shared between layer workers through read-only memory maps.
+Layer completion logs stream to your terminal.
 
 `--run-s3-uri` chooses an exact run; otherwise the latest completed activation
 run is selected. `--activation-root-s3-uri` and `--output-s3-uri` override the
@@ -275,6 +293,11 @@ result URI, so another concurrent run cannot change its inputs via a latest look
 The default is 256 activation samples per collection: 128 harmful and 128
 harmless prompts for the refusal-direction corpus. Override the total with
 `--sample-size`. Resumed experiments retain their saved sample size.
+Use `--model-s3-uri s3://MODELS_BUCKET/models/SNAPSHOT` to start from an imported
+or fine-tuned Qwen snapshot. Discovery validates that snapshot's completion
+manifest and does not require the original model to be seeded. The selected
+model is used for the first collection and as the source for orthogonalization,
+and remains pinned on resume. Omit `--seed-model` when selecting an existing model.
 It streams logs, prints commands, prepares the discovered image, prompts with a
 bell if AWS login needs refreshing, and saves an incremental JSON URI summary.
 `--modal-profile` applies consistently to preparation and every job.
@@ -403,3 +426,97 @@ default. Rebuild and prepare the updated runtime after seeding it. Collection
 balances harmful/harmless rows and needs no adversarial group. Use explicit
 `--dataset wildguardmix` with discovery/the wrapper to select the legacy dataset.
 The new corpus seeder creates its partition automatically.
+
+## Defender training and statistics
+
+The installed training pipeline uses pinned S3 model/dataset snapshots and only
+the training portion of the existing partition. It preserves main's balanced
+random batches, LoRA objective, optimizer, and step-based weight schedule. There
+are no epochs. Harmful prompts qualify when base-model next-token refusal
+log-odds are strictly above zero for Qwen tokens `I` and `As`. Targets use this
+branch's canonical ChatML format. Prompts over 256 formatted tokens are excluded;
+harmful and benign targets are capped at 64 and 128 tokens respectively.
+
+Apply the persistent stack to create
+`<project>-<account>-<region>-training-stats`. If using the dev-server role, refresh
+its inputs and apply it too:
+
+```bash
+tofu -chdir=infra/persistent apply
+tofu -chdir=infra/persistent output -json dev_server_inputs > infra/dev-server/persistent.auto.tfvars.json
+tofu -chdir=infra/dev-server apply
+```
+
+The dev-server role gains `s3:PutObject` on statistics `runs/*`, and
+`s3:PutObject`/`s3:AbortMultipartUpload` on models `models/trained/*`. When
+launching elsewhere, the forwarded AWS identity needs those grants plus read
+access to the pinned model, dataset, and partition. Custom roots need matching
+permissions. The bucket uses SSE-S3 and blocks public access.
+
+Rebuild the ECR runtime with the training dependencies, prepare its Modal image,
+and source `infra/modal/env.sh` to populate `TRAINING_STATS_URI` and the input
+URIs. Then launch a short **billable** check or a full run:
+
+```bash
+uv run --locked --extra modal modal run infra/modal/train_defense.py --run-name smoke --dry-run
+uv run --locked --extra modal modal run --detach infra/modal/train_defense.py --run-name defender-v1
+```
+
+The worker defaults to an A100-80GB and six-hour timeout. Outputs and the upload
+queue persist on `cs182-runs` under a unique `<run-name>-<uuid>` directory. Use
+credentials valid for the run's duration; forwarded session credentials do not
+refresh automatically. `--dry-run` is a short real run, not a preview; it still
+prepares targets from the eligible harmful training prompts.
+
+For local CPU/GPU training:
+
+```bash
+uv run --locked --extra training python infra/scripts/train_defense.py --run-name local-v1
+```
+
+Both entrypoints accept `--model-s3-uri`, `--dataset-s3-uri`,
+`--partition-s3-uri`, `--stats-s3-uri`, and `--model-output-s3-uri`. Override
+defaults with, for example,
+`--config-json '{"steps":100,"stats_every_steps":10,"stats_flush_seconds":30}'`.
+Local output defaults to `reports/training/`; local training also accepts
+`--output-dir` and `--device`. Configuration defaults live in
+`cs182_project.training`.
+
+Each run publishes `run.json`, `summary.json`, and ordered
+`batches/<start-record>-<end-record>.jsonl` objects under
+`$TRAINING_STATS_URI/<run-id>/`. Each record contains schema version, run ID,
+UTC timestamp, zero-based step, `loss`, `L_refuse`, `L_retain`, `L_obf`, `alpha`,
+and `lambda`. Values are the sampled step's forward-pass losses before its
+optimizer update, not interval averages. Steps 0, 20, 40, etc. and the final step
+are recorded by default, without duplicate final records. A background worker
+uploads every 60 seconds and flushes at shutdown.
+
+Separate batch objects avoid re-uploading earlier history. Costs include storage
+and periodic PUT requests. Failed uploads retain identical batch files for later
+retry and do not stop optimization. The summary distinguishes training status
+from statistics delivery. Abrupt termination can lose uncommitted Volume writes
+since the last successful commit; uploaded batches remain immediately readable.
+
+To retry with fresh credentials, download the entire run directory from the same
+Modal environment, including `run.json`, `metrics.jsonl`, `summary.json`, and
+`batches/`, then run:
+
+```bash
+uv run --locked --extra modal modal volume get cs182-runs RUN_ID ./recovered-run
+uv run --locked --extra build python infra/scripts/train_defense.py --retry-dir ./recovered-run
+```
+
+Retry needs only boto3. It reuses the original keys and payloads and exits
+nonzero while uploads remain pending. Batch `.sent` files are local delivery
+markers; do not edit batch files or run IDs.
+
+Periodic adapter checkpoints and the final adapter remain on the output Volume.
+The final model is merged in FP32, saved as standalone FP16 safetensors, reloaded
+for verification, and published under models `models/trained/` with a completion
+manifest. The summary and command result report `model_s3_uri`; pass it to the
+existing activation collection/analysis commands. Main's generated-text evaluator
+and fresh probes do not run inside this pipeline. A failed export retains the
+saved adapter and records the failure in the summary.
+
+The legacy `defense/` and `modal_app.py` entrypoints remain from main; the commands
+above use the integrated installed pipeline.

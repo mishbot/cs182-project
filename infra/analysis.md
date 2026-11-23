@@ -9,7 +9,7 @@ By default **only non-adversarial samples are analyzed**. Pass
 `--include-adversarial` to add a completely separate adversarial analysis.
 Refusal is detected with the strict condition **`refusal_metric > 0`**.
 
-## Run on one Modal GPU
+## Run on one Modal CPU machine
 
 First apply the new bucket configuration, and refresh exported dev-server inputs
 if you also use EC2:
@@ -31,11 +31,13 @@ uv run --locked --extra modal python -m infra.modal.prepare_image
 uv run --locked --extra modal modal run infra/modal/analyze_activations.py
 ```
 
-The default is one A100-40GB, four CPU cores, 32 GiB RAM, and a one-hour timeout.
-Use `--gpu`, `--memory` (MiB), and `--timeout` (seconds) to override. This job does
-not require an EC2 instance or AWS GPU quota. It reads inputs directly from S3;
-no activation tensors pass through your terminal. Modal streams logs, including
-cuML GPU dispatch and CPU fallbacks. The final output is the report's S3 URI.
+The default is 24 worker processes with one numerical thread each, 24 requested
+CPU cores, 64 GiB RAM, and a one-hour timeout. Use `--workers`,
+`--threads-per-worker`, `--cpu`, `--memory` (MiB), and `--timeout` (seconds)
+to override. Unless explicitly supplied, the CPU request is workers × threads.
+The job downloads activations once on the cloud machine; tensors do not pass
+through your terminal. Modal streams layer completion logs and prints the final
+report's S3 URI.
 
 ```bash
 uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
@@ -43,19 +45,18 @@ uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
   --include-adversarial --folds 5 --seed 0
 ```
 
-The worker uses the ECR image's `/app/.analysis-venv`, managed by the separate
-uv project in `infra/analysis-runtime`. It pins cuML 26.10.0 and sklearn 1.9.1,
-without changing the inference environment. The image includes CUDA 12.9's
-**development** toolkit, including NVRTC, and uv-managed Python 3.11.12.
-`cuml.accel` is installed before sklearn imports. A missing GPU or inactive
-estimator interception fails explicitly before downloading data. Layer loops
-remain sequential; supported estimator operations run on the GPU. Float64 inputs
-are preserved, though GPU solvers can produce different fitted coefficients.
+The worker uses the shared ECR image's `/app/.venv` and ordinary CPU
+NumPy/SciPy/scikit-learn. A joblib process pool evaluates layers independently;
+each layer keeps its CV folds, final refits, and PCA together. Adversarial and
+non-adversarial groups are evaluated separately. Workers share read-only
+memory-mapped activation inputs and allocate float64 features only for their
+own layer. BLAS/OpenMP pools are bounded per worker to prevent oversubscription.
+Results retain deterministic layer ordering and the existing estimator settings.
 
-The image and GPU dependency layers are larger than the earlier inference-only
-image. CodeBuild and Modal cache them. GPU duration, S3 storage/requests, and any
-applicable data transfer are billed; retaining only result artifacts on your
-workstation avoids repeatedly downloading activation tensors.
+The CUDA development toolkit, cuML, and separate analysis environment have been
+removed. Inference and activation collection still use GPUs through PyTorch's
+CUDA wheels. Rebuild and prepare the image before using these entrypoints.
+CPU compute, S3 storage/requests, and applicable data transfer are billed.
 
 ## Run locally or on EC2
 
@@ -65,10 +66,27 @@ The same command remains available on CPU:
 uv run --locked --extra analysis python infra/scripts/analyze_activations.py
 ```
 
+To download a completed experiment's HTML reports and regenerate static
+scatterplots from its saved analysis artifacts, run:
+
+```bash
+uv run --locked --extra analysis python infra/scripts/regenerate_experiment_scatterplots.py \
+  reports/activations/experiment-TIMESTAMP.json
+```
+
+The script writes class-colored and refusal-metric-colored midpoint best-F1
+plots for both `original_analysis` and `orthogonalized_analysis` to
+`report_v1/images/experiment-EXPERIMENT_ID/`. Open `originalqwen_report.html`
+and `originalqwen_orthogonalized_report.html` from the same folder in a browser.
+The script prints both local paths before rendering the PNGs. The `analysis`
+extra includes Kaleido for Plotly PNG export, which requires Chrome or Chromium.
+Both analysis stages must be complete in the experiment JSON.
+
 It retains local artifacts in `reports/activations/RUN_ID/` and also publishes
-results to S3. `--output-dir` changes the local location. GPU execution in the
-container uses `/app/.analysis-venv/bin/python /app/analyze_activations.py
---backend cuml`; local CPU analysis needs no CUDA or cuML installation.
+results to S3. `--output-dir` changes the local location. Local execution defaults
+to one worker and one numerical thread. Use `--workers` and
+`--threads-per-worker` to parallelize locally or on EC2. The old `--backend`
+option has been removed.
 
 Both interfaces accept an exact `--run-s3-uri` (run directory or manifest) or
 `--activation-root-s3-uri`. Without either, latest selection uses `OUTPUT_URI`,
@@ -104,7 +122,7 @@ s3://ANALYSES_BUCKET/runs/ACTIVATION_RUN_ID/ANALYSIS_ID/
 
 The completion manifest is written last, after all artifact uploads succeed. It
 records source-run checksum, parameters, enabled groups, strict refusal threshold,
-backend/GPU and versions, artifact sizes/checksums, and download/analysis/render/
+CPU worker/thread configuration and versions, artifact sizes/checksums, and download/analysis/render/
 upload timings. Download includes reading and verifying Parquet; upload timing
 excludes the final completion-marker request. Failed uploads can leave orphan
 artifacts but never publish a successful completion marker.
@@ -190,8 +208,7 @@ exact tie; use the earliest tied layer for the selected direction. Models are
 refitted on all subgroup rows for coefficient export. Classifier directions point
 toward harmful predictions and regression directions toward increasing refusal.
 Scores used for layer selection are exploratory CV results, not independent
-held-out validation estimates. GPU coefficients need not equal CPU coefficients;
-compare predictive quality and geometric invariants. Source-layer labels remain
+held-out validation estimates. Source-layer labels remain
 visible when comparing directions from different layers.
 
 ## Apply a direction to model weights
@@ -200,3 +217,20 @@ Use the exported directions to [derive an orthogonalized model](orthogonalizatio
 The Modal job defaults to the non-adversarial mean-difference direction at the
 best-F1 layer, verifies the exact source-model identity, and publishes a new model
 snapshot for subsequent inference or activation collection.
+
+## Compare CPU configurations
+
+Use the same explicit activation manifest, folds, and seed for both runs:
+
+```bash
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
+  --run-s3-uri "$ACTIVATION_RUN_URI" --workers 1 --threads-per-worker 1
+uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
+  --run-s3-uri "$ACTIVATION_RUN_URI" --workers 24 --threads-per-worker 1
+```
+
+Compare wall-clock time and the completion manifests' `timings_seconds`, especially
+`analysis` versus `download`. Execution metadata in both the manifest and
+`metrics.json` records worker count, thread limits, dependency versions, and
+per-layer elapsed seconds by sample group. Per-layer times overlap in parallel
+runs; their sum is not the analysis wall time. No local tensor download is needed.

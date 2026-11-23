@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Run original-Qwen collection → analysis → mean-difference orthogonalization → collection → analysis.
+"""Run Qwen collection → analysis → mean-difference orthogonalization → collection → analysis.
 
 Requires a published ECR runtime built from the original-Qwen code and a seeded
 refusal-direction corpus. Use --seed-model and --partition-dataset for first-time setup.
+Use --model-s3-uri to start from an imported or fine-tuned Qwen snapshot.
 """
 
 import argparse
@@ -29,7 +30,7 @@ ENVIRONMENT_KEYS = ("CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CONFIGURATION_KEYS = ("dataset", "sample_size", "seed", "batch_size", "max_input_tokens", "folds",
                       "include_adversarial", "project", "region", "modal_profile",
-                      "partition_s3_uri", "seed_model", "partition_dataset")
+                      "partition_s3_uri", "seed_model", "partition_dataset", "model_s3_uri")
 
 
 def restore_configuration(parser, args):
@@ -47,6 +48,10 @@ def restore_configuration(parser, args):
         if not isinstance(state, dict) or state.get("schema_version") not in (None, 2):
             raise ValueError("Unsupported experiment checkpoint")
         saved = state.get("configuration")
+        if isinstance(saved, dict):
+            # Older v2 checkpoints predate model selection and already pin their
+            # baseline in original_model/environment. Preserve that selection.
+            saved.setdefault("model_s3_uri", None)
         if state.get("schema_version") == 2 and (not isinstance(saved, dict)
                 or any(key not in saved for key in CONFIGURATION_KEYS)):
             raise ValueError("Checkpoint is missing its saved configuration")
@@ -105,6 +110,7 @@ def result_uri(result, *, dry_run, placeholder, suffix=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", choices=["refusal-direction", "wildguardmix"], default="refusal-direction")
+    parser.add_argument("--model-s3-uri", help="Completed S3 model snapshot prefix; defaults to the original Qwen model")
     parser.add_argument("--sample-size", type=int, default=256,
                         help="Total activation samples (default: 256, balanced as 128 harmful and 128 harmless for refusal-direction)")
     parser.add_argument("--seed", type=int, default=0)
@@ -125,7 +131,17 @@ def main():
                         help="Explicitly adopt a completed output when recovering a legacy/lost result (requires --resume)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands with placeholder URIs; execute nothing")
     args = parser.parse_args()
+    if args.model_s3_uri:
+        args.model_s3_uri = args.model_s3_uri.rstrip("/")
+        try:
+            _, model_prefix = parse_s3_uri(args.model_s3_uri)
+            if model_prefix.endswith("/artifact-manifest.json"):
+                raise ValueError("--model-s3-uri requires the snapshot prefix, not its manifest file")
+        except ValueError as error:
+            parser.error(str(error))
     restored = restore_configuration(parser, args)
+    if args.model_s3_uri and args.seed_model:
+        parser.error("--model-s3-uri selects an existing snapshot; omit --seed-model")
     classes = 4 if args.dataset == "wildguardmix" else 2
     if args.folds < 2 or args.sample_size < classes * args.folds:
         parser.error(f"Use --folds >= 2 and --sample-size >= {classes} * --folds for balanced analysis")
@@ -258,9 +274,12 @@ def main():
                                                    prefix=f"models/{MODEL_NAME}/{MODEL_REVISION}"),
                   f"s3://{prefix}-models/models/{MODEL_NAME}/{MODEL_REVISION}")
         if not all(key in environment for key in ENVIRONMENT_KEYS):
-            discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset])
+            command = [*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset]
+            if args.model_s3_uri:
+                command.extend(["--model-s3-uri", args.model_s3_uri])
+            discovered = run(command)
             if args.dry_run:
-                values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
+                values = ["ECR_REPOSITORY:IMAGE_TAG", args.model_s3_uri or "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
                           f"s3://DATASETS_BUCKET/datasets/{args.dataset}/REVISION", environment["OUTPUT_URI"],
                           environment["ANALYSIS_URI"], environment["TRAINING_STATS_URI"]]
             else:

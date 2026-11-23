@@ -1,11 +1,9 @@
-"""Offline publication and accelerator-startup checks using scientific fixtures."""
+"""Offline publication checks using scientific fixtures."""
 
 import hashlib
 import json
 from pathlib import Path
-import sys
 import tempfile
-from types import SimpleNamespace
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -73,43 +71,6 @@ class AnalysisPublicationTest(unittest.TestCase):
             uri = jobs.run_analysis(session, output_dir=directory)
         self.assertTrue(uri.startswith('s3://cs182-cddr-123456789012-us-east-1-analyses/runs/'))
         latest.assert_called_once_with(s3, 's3://cs182-cddr-123456789012-us-east-1-activations/runs')
-
-
-class AcceleratorStartupTest(unittest.TestCase):
-    def test_accelerator_is_installed_before_estimators_are_imported(self):
-        cupy, accelerator = MagicMock(), MagicMock()
-        cupy.__version__ = 'fixture'
-        cupy.cuda.runtime.getDeviceCount.return_value = 1
-        cupy.cuda.runtime.getDeviceProperties.return_value = {'name': b'A100', 'totalGlobalMem': 40000000000}
-        accelerator.is_proxy.return_value = True
-        imports = []
-        def import_module(name):
-            imports.append(name)
-            if name == 'cupy':
-                return cupy
-            if name == 'cuml.accel':
-                return accelerator
-            accelerator.install.assert_called_once_with(log_level='info')
-            return MagicMock()
-        with patch.dict(sys.modules), patch.object(jobs.importlib, 'import_module', side_effect=import_module), \
-                patch.object(jobs, 'version', return_value='fixture'):
-            sys.modules.pop('sklearn', None)
-            result = jobs.enable_backend('cuml')
-        self.assertEqual(imports, ['cupy', 'cuml.accel', 'sklearn.linear_model', 'sklearn.decomposition'])
-        self.assertEqual(result['gpu'], 'A100')
-        self.assertEqual(result['precision'], 'float64')
-        self.assertEqual(accelerator.is_proxy.call_count, 3)
-
-    def test_missing_gpu_and_late_installation_fail_explicitly(self):
-        with patch.dict(sys.modules, {'sklearn': SimpleNamespace()}):
-            with self.assertRaisesRegex(RuntimeError, 'fresh Python'):
-                jobs.enable_backend('cuml')
-        cupy = MagicMock()
-        cupy.cuda.runtime.getDeviceCount.return_value = 0
-        with patch.dict(sys.modules), patch.object(jobs.importlib, 'import_module', return_value=cupy):
-            sys.modules.pop('sklearn', None)
-            with self.assertRaisesRegex(RuntimeError, 'available NVIDIA GPU'):
-                jobs.enable_backend('cuml')
 
 
 if __name__ == '__main__':

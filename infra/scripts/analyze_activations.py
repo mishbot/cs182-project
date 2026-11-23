@@ -23,7 +23,8 @@ def main():
     parser.add_argument("--output-dir", type=Path, help="Retain local artifacts in addition to the S3 export")
     parser.add_argument("--output-s3-uri", help="Results prefix; defaults to ANALYSIS_URI or the project's analyses bucket")
     parser.add_argument("--include-adversarial", action="store_true")
-    parser.add_argument("--backend", choices=["cpu", "cuml"], default="cpu")
+    parser.add_argument("--workers", type=int, default=1)
+    parser.add_argument("--threads-per-worker", type=int, default=1)
     args = parser.parse_args()
     if args.folds < 2 or args.seed < 0:
         parser.error("--folds must be at least 2; --seed must be nonnegative")

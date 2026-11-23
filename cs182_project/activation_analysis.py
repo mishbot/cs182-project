@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import logging
+import tempfile
+import time
 import warnings
-from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal
+from collections.abc import Iterable
+from dataclasses import dataclass, replace
+from typing import TYPE_CHECKING, Literal, cast
 
 from ._types import JsonObject
 from .activation_runs import ActivationRun
@@ -70,6 +73,7 @@ class LayerAnalysis:
     refusal_fit: LinearFit
     refusal_regression: RegressionMetrics
     refusal_predictions: NDArray[np.float64]
+    elapsed_seconds: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -316,7 +320,29 @@ def _evaluate_layer(
     )
 
 
-def _analyze_group(run: ActivationRun, group: str, *, folds: int, seed: int) -> ActivationAnalysis:
+def _evaluate_layer_task(
+    layer: int,
+    values: NDArray[np.float32],
+    labels: NDArray[np.bool_],
+    partitions: list[tuple[NDArray[np.int64], NDArray[np.int64]]],
+    seed: int,
+    targets: NDArray[np.float64],
+    threads_per_worker: int,
+) -> LayerAnalysis:
+    """Copy only this layer to float64 and bound native numerical thread pools."""
+    import numpy as np
+    from threadpoolctl import threadpool_limits
+
+    started = time.perf_counter()
+    with threadpool_limits(limits=threads_per_worker):
+        features = np.asarray(values[:, layer, :], dtype=np.float64)
+        result = _evaluate_layer(layer, features, labels, partitions, seed, targets)
+    return replace(result, elapsed_seconds=time.perf_counter() - started)
+
+
+def _analyze_group(
+    run: ActivationRun, group: str, *, folds: int, seed: int, workers: int, threads_per_worker: int
+) -> ActivationAnalysis:
     """Use identical stratified folds for every layer and both classifiers."""
     import numpy as np
     from sklearn.model_selection import StratifiedKFold
@@ -348,10 +374,53 @@ def _analyze_group(run: ActivationRun, group: str, *, folds: int, seed: int) -> 
     for fold, (_, test) in enumerate(partitions):
         fold_ids[test] = fold
     layers: list[LayerAnalysis] = []
-    for layer in range(values.shape[1]):
-        logger.info("Analyzing layer %s of %s", layer, values.shape[1] - 1)
-        features = np.asarray(values[:, layer, :], dtype=np.float64)
-        layers.append(_evaluate_layer(layer, features, labels, partitions, seed, targets))
+    from joblib import Parallel, delayed, parallel_config
+
+    def completed(result: LayerAnalysis) -> None:
+        layers.append(result)
+        logger.info(
+            "%s: completed layer %s (%s/%s) in %.2fs",
+            group,
+            result.layer,
+            len(layers),
+            values.shape[1],
+            result.elapsed_seconds,
+        )
+
+    if workers == 1:
+        for layer in range(values.shape[1]):
+            completed(
+                _evaluate_layer_task(
+                    layer, values, labels, partitions, seed, targets, threads_per_worker
+                )
+            )
+    else:
+        # Explicit disk-backed input: every worker maps the same read-only tensor.
+        # Keep it alive until all jobs finish; native fits allocate only per-layer copies.
+        with tempfile.TemporaryDirectory(prefix="cs182-analysis-layers-") as directory:
+            path = f"{directory}/activations.npy"
+            np.save(path, values, allow_pickle=False)
+            shared = np.load(path, mmap_mode="r", allow_pickle=False)
+            try:
+                with parallel_config(backend="loky", inner_max_num_threads=threads_per_worker):
+                    results = cast(
+                        Iterable[LayerAnalysis],
+                        Parallel(
+                            n_jobs=min(workers, values.shape[1]),
+                            return_as="generator_unordered",
+                            max_nbytes=None,
+                        )(
+                            delayed(_evaluate_layer_task)(
+                                layer, shared, labels, partitions, seed, targets, threads_per_worker
+                            )
+                            for layer in range(values.shape[1])
+                        ),
+                    )
+                    for result in results:
+                        completed(result)
+            finally:
+                del shared
+    layers.sort(key=lambda result: result.layer)
     return ActivationAnalysis(
         run.manifest_uri,
         run.manifest_sha256,
@@ -379,13 +448,19 @@ def best_layers(analysis: ActivationAnalysis, classifier: Classifier) -> list[in
 
 
 def analyze_activations(
-    run: ActivationRun, *, folds: int = 5, seed: int = 0, include_adversarial: bool = False
+    run: ActivationRun,
+    *,
+    folds: int = 5,
+    seed: int = 0,
+    include_adversarial: bool = False,
+    workers: int = 1,
+    threads_per_worker: int = 1,
 ) -> ActivationAnalyses:
     """Evaluate adversarial and non-adversarial rows independently; reserve validation data."""
-    from dataclasses import replace
-
     import numpy as np
 
+    if workers < 1 or threads_per_worker < 1:
+        raise ValueError("workers and threads_per_worker must be positive integers.")
     if (
         run.activations.ndim != 3
         or run.harmful.ndim != 1
@@ -416,7 +491,16 @@ def analyze_activations(
             top_token_probabilities=run.top_token_probabilities[selected],
         )
         try:
-            groups.append(_analyze_group(subset, name, folds=folds, seed=seed))
+            groups.append(
+                _analyze_group(
+                    subset,
+                    name,
+                    folds=folds,
+                    seed=seed,
+                    workers=workers,
+                    threads_per_worker=threads_per_worker,
+                )
+            )
         except ValueError as error:
             raise ValueError(f"{name}: {error}") from error
     return ActivationAnalyses(run, tuple(groups))

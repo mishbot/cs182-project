@@ -18,7 +18,7 @@ chain. The image pins Python
 support CPU inference; allow at least 16 GiB host RAM and several GB for downloads.
 The shared image also includes a CUDA 12.9 development toolkit and a separately
 locked cuML analysis environment. GPU hosts must meet that CUDA driver requirement;
-see [GPU analysis](analysis.md) for Modal execution and the new analyses bucket.
+see [CPU analysis](analysis.md) for Modal execution and the new analyses bucket.
 CodeBuild builds linux/amd64 images natively; publishing needs no local Docker
 or amd64 emulation on an ARM workstation.
 

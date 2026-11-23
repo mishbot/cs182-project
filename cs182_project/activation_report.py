@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import tempfile
@@ -25,6 +26,7 @@ from .activation_analysis import (
 )
 
 if TYPE_CHECKING:
+    from mypy_boto3_s3 import S3Client
     from plotly.graph_objects import Figure
 
 
@@ -155,7 +157,10 @@ def _scatter_figure(
     )
     buttons: list[JsonObject] = []
     for index, layer in enumerate(analysis.layers):
-        for harmful, label, color in [(True, "Harmful", "#dc2626"), (False, "Harmless", "#2563eb")]:
+        for harmful, label, color, symbol in [
+            (True, "Harmful", "#dc2626", "triangle-up"),
+            (False, "Harmless", "#2563eb", "circle"),
+        ]:
             selected = np.flatnonzero(analysis.harmful == harmful)
             hover = [
                 [
@@ -173,12 +178,14 @@ def _scatter_figure(
                     name=label,
                     customdata=hover,
                     mode="markers",
+                    showlegend=index == initial,
                     visible=index == initial,
                     marker={
                         "color": analysis.refusal_metric[selected] if color_by_refusal else color,
                         **({"coloraxis": "coloraxis"} if color_by_refusal else {}),
                         "size": 6,
                         "opacity": 0.65,
+                        "symbol": symbol,
                     },
                     hovertemplate="Source row %{customdata[0]}<br>CV fold %{customdata[1]}<br>%{customdata[2]}<br>Refusal metric %{customdata[3]:.4g}<br>r coordinate %{x:.4g}<br>Orthogonal PC1 %{y:.4g}<extra>%{fullData.name}</extra>",
                 )
@@ -207,16 +214,120 @@ def _scatter_figure(
         template="plotly_white",
         height=650,
         updatemenus=[{"buttons": buttons, "active": initial, "x": 0, "y": 1.14}],
-        margin={"t": 130},
+        legend={"orientation": "h", "x": 0, "y": 1.04, "xanchor": "left", "yanchor": "bottom"},
+        margin={"t": 165, "r": 120},
         coloraxis={
             "colorscale": "Viridis",
             "cmin": color_range[0],
             "cmax": color_range[1],
-            "colorbar": {"title": "Refusal metric"},
+            "colorbar": {"title": "Refusal metric", "x": 1.02},
         },
     )
     figure.add_vline(x=0, line_dash="dash", line_color="gray")
     return figure
+
+
+def render_scatterplot_pngs(
+    metrics: JsonObject,
+    directions_data: bytes,
+    output_dir: PathInput,
+    *,
+    name_prefix: str,
+) -> list[Path]:
+    """Render the saved per-layer projections without rerunning activation analysis."""
+    import numpy as np
+    import plotly.graph_objects as go
+
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    written: list[Path] = []
+    with np.load(io.BytesIO(directions_data), allow_pickle=False) as arrays:
+        refusal_values = [
+            np.asarray(arrays[f"{group_name}__refusal_metric"], dtype=float)
+            for group_name in metrics["groups"]
+        ]
+        finite_values = np.concatenate([values[np.isfinite(values)] for values in refusal_values])
+        shared_range = (
+            (float(finite_values.min()), float(finite_values.max()))
+            if finite_values.size
+            else (-1.0, 1.0)
+        )
+        if shared_range[0] == shared_range[1]:
+            shared_range = (shared_range[0] - 0.5, shared_range[1] + 0.5)
+        for group_name, group_metrics in metrics["groups"].items():
+            prefix = (
+                f"{name_prefix}_"
+                if group_name == "non_adversarial"
+                else f"{name_prefix}_{group_name}_"
+            )
+            best_layers = group_metrics["best_layers"]["midpoint"]
+            if not best_layers:
+                raise ValueError(f"No midpoint best-F1 layer recorded for {group_name}.")
+            layer = min(best_layers)
+            key = f"{group_name}__"
+            labels = np.asarray(arrays[key + "harmful"], dtype=bool)
+            refusal = np.asarray(arrays[key + "refusal_metric"], dtype=float)
+            coordinates = np.asarray(arrays[key + "coordinates"][layer], dtype=float)
+            if coordinates.shape != (labels.size, 2) or refusal.shape != labels.shape:
+                raise ValueError(f"Malformed projection arrays for {group_name}.")
+            for by_refusal, suffix in ((False, "class"), (True, "refusal_metric")):
+                figure = go.Figure()
+                for harmful, label, color, symbol in (
+                    (True, "Harmful", "#dc2626", "triangle-up"),
+                    (False, "Harmless", "#2563eb", "circle"),
+                ):
+                    selected = np.flatnonzero(labels == harmful)
+                    marker = {"size": 6, "opacity": 0.65, "symbol": symbol}
+                    marker["color"] = refusal[selected] if by_refusal else color
+                    if by_refusal:
+                        marker["coloraxis"] = "coloraxis"
+                    figure.add_trace(
+                        go.Scattergl(
+                            x=coordinates[selected, 0],
+                            y=coordinates[selected, 1],
+                            name=label,
+                            mode="markers",
+                            marker=marker,
+                        )
+                    )
+                figure.update_layout(
+                    title=f"Layer {layer}: {group_name.replace('_', ' ')} projection",
+                    xaxis_title="(activation − class-mean midpoint) · normalized r",
+                    yaxis_title="Centered activation · orthogonal PC1",
+                    template="plotly_white",
+                    height=650,
+                    coloraxis={
+                        "colorscale": "Viridis",
+                        "cmin": shared_range[0],
+                        "cmax": shared_range[1],
+                        "colorbar": {"title": "Refusal metric"},
+                    },
+                    legend={"orientation": "h"},
+                )
+                figure.add_vline(x=0, line_dash="dash", line_color="gray")
+                path = output / f"{prefix}midpointF1_scatter_by_{suffix}.png"
+                figure.write_image(str(path))
+                written.append(path)
+    return written
+
+
+def download_analysis_plot_artifacts(s3: S3Client, report_uri: str) -> tuple[JsonObject, bytes]:
+    """Download and verify the numerical artifacts belonging to a published report URI."""
+    from .analysis_directions import _artifacts, _verified_artifact, json_object, read_object
+    from .model_artifacts import parse_s3_uri
+
+    bucket, key = parse_s3_uri(report_uri)
+    prefix = key.rsplit("/", 1)[0] if key.endswith("/report.html") else key.rstrip("/")
+    manifest_bytes = read_object(s3, bucket, f"{prefix}/manifest.json")
+    manifest = json_object(manifest_bytes)
+    artifacts = _artifacts(manifest, prefix)
+    metrics = json_object(_verified_artifact(s3, bucket, artifacts["metrics.json"]))
+    if metrics.get("manifest_sha256") != manifest.get("source_manifest_sha256"):
+        raise ValueError(
+            "Analysis metrics and completion manifest disagree on the activation source."
+        )
+    directions = _verified_artifact(s3, bucket, artifacts["directions.npz"])
+    return metrics, directions
 
 
 def _metric_cells(metrics: BinaryMetrics | None, winner: bool) -> str:

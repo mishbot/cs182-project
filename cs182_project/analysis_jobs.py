@@ -1,8 +1,7 @@
-"""Analysis orchestration, accelerator setup, and completed-result publication."""
+"""Analysis orchestration, CPU execution, and completed-result publication."""
 
 from __future__ import annotations
 
-import importlib
 import json
 import logging
 import os
@@ -11,7 +10,7 @@ import uuid
 from datetime import datetime, timezone
 from importlib.metadata import version
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING
 
 from ._types import JsonObject, PathInput
 from .activation_runs import activation_root, latest_activation_run, load_activation_run
@@ -22,7 +21,6 @@ if TYPE_CHECKING:
     from mypy_boto3_s3 import S3Client
 
 logger = logging.getLogger(__name__)
-Backend = Literal["cpu", "cuml"]
 ARTIFACT_TYPES = {
     "report.html": "text/html; charset=utf-8",
     "metrics.json": "application/json",
@@ -30,42 +28,25 @@ ARTIFACT_TYPES = {
 }
 
 
-def enable_backend(backend: Backend) -> JsonObject:
-    """Install acceleration before sklearn imports; requesting CUDA never silently selects CPU."""
-    if backend not in {"cpu", "cuml"}:
-        raise ValueError("Backend must be cpu or cuml.")
-    execution: JsonObject = {"backend": backend, "precision": "float64"}
-    if backend == "cuml":
-        import sys
-
-        if "sklearn" in sys.modules:
-            raise RuntimeError(
-                "Enable cuml.accel before importing sklearn; use a fresh Python process."
+def execution_metadata(workers: int, threads_per_worker: int) -> JsonObject:
+    """Describe CPU numerical execution independently of report rendering."""
+    execution: JsonObject = {
+        "backend": "cpu",
+        "precision": "float64",
+        "workers": workers,
+        "threads_per_worker": threads_per_worker,
+        "versions": {
+            name: version(name)
+            for name in (
+                "numpy",
+                "scipy",
+                "scikit-learn",
+                "pyarrow",
+                "plotly",
+                "joblib",
+                "threadpoolctl",
             )
-        cupy = importlib.import_module("cupy")
-        if cupy.cuda.runtime.getDeviceCount() < 1:
-            raise RuntimeError("The cuml backend requires an available NVIDIA GPU.")
-        cupy.zeros(1).sum().item()  # Exercise the CUDA runtime before downloading inputs.
-        device = cupy.cuda.runtime.getDeviceProperties(cupy.cuda.runtime.getDevice())
-        name = device["name"]
-        accelerator = importlib.import_module("cuml.accel")
-        accelerator.install(log_level="info")
-        # Avoid reporting successful GPU setup when interception was not installed.
-        linear = importlib.import_module("sklearn.linear_model")
-        decomposition = importlib.import_module("sklearn.decomposition")
-        if not all(
-            accelerator.is_proxy(cls)
-            for cls in (linear.LogisticRegression, linear.Ridge, decomposition.PCA)
-        ):
-            raise RuntimeError("cuml.accel did not intercept the required analysis estimators.")
-        execution.update(
-            gpu=name.decode() if isinstance(name, bytes) else str(name),
-            gpu_memory_bytes=int(device["totalGlobalMem"]),
-            cuml_version=version("cuml-cu12"),
-            cupy_version=cupy.__version__,
-        )
-    execution["versions"] = {
-        name: version(name) for name in ("numpy", "scipy", "scikit-learn", "pyarrow", "plotly")
+        },
     }
     logger.info("Analysis execution: %s", json.dumps(execution, sort_keys=True))
     return execution
@@ -132,10 +113,13 @@ def run_analysis(
     folds: int = 5,
     seed: int = 0,
     include_adversarial: bool = False,
-    backend: Backend = "cpu",
+    workers: int = 1,
+    threads_per_worker: int = 1,
     output_dir: PathInput | None = None,
 ) -> str:
     """Read S3 once, analyze enabled groups, render locally, and return the published report URI."""
+    if workers < 1 or threads_per_worker < 1:
+        raise ValueError("workers and threads_per_worker must be positive integers.")
     if folds < 2 or seed < 0:
         raise ValueError("--folds must be at least 2; --seed must be nonnegative.")
     if run_s3_uri and activation_root_s3_uri:
@@ -143,8 +127,7 @@ def run_analysis(
     for uri in (run_s3_uri, activation_root_s3_uri, output_s3_uri):
         if uri:
             parse_s3_uri(uri)
-    execution = enable_backend(backend)
-    # These imports remain below accelerator installation, including on CPU.
+    execution = execution_metadata(workers, threads_per_worker)
     from .activation_analysis import analyze_activations
     from .activation_report import write_analysis_report
 
@@ -167,9 +150,18 @@ def run_analysis(
     timings["download"] = time.perf_counter() - started
     started = time.perf_counter()
     result = analyze_activations(
-        run, folds=folds, seed=seed, include_adversarial=include_adversarial
+        run,
+        folds=folds,
+        seed=seed,
+        include_adversarial=include_adversarial,
+        workers=workers,
+        threads_per_worker=threads_per_worker,
     )
     timings["analysis"] = time.perf_counter() - started
+    execution["layer_timings_seconds"] = {
+        group.group: {str(layer.layer): layer.elapsed_seconds for layer in group.layers}
+        for group in result.groups
+    }
     metadata = {
         "source_manifest_uri": run.manifest_uri,
         "source_manifest_sha256": run.manifest_sha256,

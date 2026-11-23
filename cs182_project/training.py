@@ -212,7 +212,8 @@ def train(
                 )
             examples.append(selected)
         summary.update(n_harmful_kept=len(examples[0]), n_harmless_train=len(examples[1]))
-        from peft import LoraConfig, get_peft_model
+        from peft.mapping import get_peft_model
+        from peft.tuners.lora import LoraConfig
 
         model.config.use_cache = False
         if cfg["grad_checkpointing"]:
@@ -249,11 +250,11 @@ def train(
                 stats.record(step, logs)
                 logger.info("step %s: %s", step, logs)
             if step > 0 and step % cfg["checkpoint_every"] == 0:
-                model.save_pretrained(directory / f"step{step}")
+                model.save_pretrained(str(directory / f"step{step}"))
                 write_json(directory / "summary.json", summary)
                 if persist:
                     persist()
-        model.save_pretrained(directory / "adapter")
+        model.save_pretrained(str(directory / "adapter"))
         if persist:
             persist()
         if cfg["export_merged"]:
@@ -282,7 +283,14 @@ def train(
         summary["pending_batches"] = pending
         summary["statistics_delivery"] = "pending" if pending else "complete"
         write_json(directory / "summary.json", summary)
-        stats.flush()
+        final_pending = stats.flush()
+        if final_pending != pending:
+            pending = final_pending
+            summary["pending_batches"] = pending
+            summary["statistics_delivery"] = "pending" if pending else "complete"
+            write_json(directory / "summary.json", summary)
+            if persist:
+                persist()
         if pending:
             logger.warning(
                 "Unsent statistics in %s; retry with train_defense.py --retry-dir", directory

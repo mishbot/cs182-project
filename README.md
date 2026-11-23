@@ -2,6 +2,9 @@
 
 CS 182/282 final project, Fall 2026.
 
+For the integrated S3-based pipeline, see
+[training and streamed statistics](infra/modal/README.md#defender-training-and-statistics).
+
 Arditi et al. remove refusal from chat models by ablating one direction: the difference between mean activations on harmful and harmless prompts. We fine-tune Qwen-1.8B-Chat so those activations are hard to tell apart, then re-run the same weight edit and measure how much harmful compliance rises.
 
 ## Layout
@@ -83,7 +86,7 @@ Orthogonalization uses the non-adversarial difference of means. Use
 The wrapper starts billable cloud jobs and stops on the first failure, retaining
 completed-step URIs and the printed command for manual recovery.
 
-For GPU analysis, run `uv run --locked --extra modal modal run infra/modal/analyze_activations.py`
+For parallel CPU analysis, run `uv run --locked --extra modal modal run infra/modal/analyze_activations.py`
 after rebuilding and preparing the ECR image. Results are exported to the analyses
 S3 bucket. Only non-adversarial samples are analyzed by default; add
 `--include-adversarial` for both groups. Refusal uses the strict threshold `> 0`.

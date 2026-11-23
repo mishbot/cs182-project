@@ -59,11 +59,9 @@ docker run --rm --network none --entrypoint python "$image" \
 docker run --rm --network none --entrypoint python \
   -v "$PWD/infra:/test-source/infra:ro" "$image" \
   -m unittest discover -s /test-source/infra/tests -v
-# Check the isolated environment without importing GPU-dependent cuML on this CPU worker.
+# Validate the shared CPU analysis / GPU inference environment.
 docker run --rm --network none --entrypoint uv "$image" \
-  pip check --python /app/.analysis-venv/bin/python
-docker run --rm --network none --entrypoint /app/.analysis-venv/bin/python "$image" \
-  -c 'from importlib.metadata import version; import cs182_project, sklearn; print("cuML", version("cuml-cu12"), "sklearn", sklearn.__version__)'
+  pip check --python /app/.venv/bin/python
 
 # Re-export the cached, tested build graph directly to the registry. Loading an
 # image into Docker and using `docker push` would discard eStargz compression.

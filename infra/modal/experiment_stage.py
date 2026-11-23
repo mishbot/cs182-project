@@ -55,9 +55,9 @@ def create_worker(request, credentials, *, prepare_image=True):
         image = runtime_image(request["runtime_image"])
     worker_app = modal.App("cs182-experiment-" + task.replace("_", "-"))
     config = dict(image=image, secrets=[modal.Secret.from_dict(credentials)],
-                  cpu=4 if task == "analysis" else 2,
-                  memory=32768 if task == "analysis" else (2048 if task == "seed_model" else 16384),
-                  gpu="A100-40GB" if task == "analysis" else (None if task in {"seed_model", "partition_dataset"} else "T4"),
+                  cpu=(request["options"].get("workers", 24) * request["options"].get("threads_per_worker", 1)) if task == "analysis" else 2,
+                  memory=65536 if task == "analysis" else (2048 if task == "seed_model" else 16384),
+                  gpu=None if task in {"analysis", "seed_model", "partition_dataset"} else "T4",
                   timeout=3600, retries=0, serialized=True, include_source=False)
     if task in {"collect_activations", "orthogonalize_model"}:
         config["volumes"] = {CACHE_MOUNT: modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True, version=2)}

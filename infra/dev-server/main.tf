@@ -25,6 +25,7 @@ variable "model_bucket" { type = string }
 variable "dataset_bucket" { type = string }
 variable "activation_bucket" { type = string }
 variable "analysis_bucket" { type = string }
+variable "training_stats_bucket" { type = string }
 variable "ecr_repository" { type = string }
 variable "data_volume_id" { type = string }
 variable "ssh_public_key" {
@@ -67,6 +68,7 @@ data "aws_s3_bucket" "models" { bucket = var.model_bucket }
 data "aws_s3_bucket" "datasets" { bucket = var.dataset_bucket }
 data "aws_s3_bucket" "activations" { bucket = var.activation_bucket }
 data "aws_s3_bucket" "analyses" { bucket = var.analysis_bucket }
+data "aws_s3_bucket" "training_stats" { bucket = var.training_stats_bucket }
 data "aws_ecr_repository" "runtime" { name = var.ecr_repository }
 
 resource "aws_vpc" "main" {
@@ -149,6 +151,27 @@ resource "aws_iam_role_policy" "activation_write" {
       Action   = ["s3:PutObject", "s3:AbortMultipartUpload"]
       Resource = "${data.aws_s3_bucket.activations.arn}/*"
     }]
+  })
+}
+
+# Narrow the analyzer's S3 write baseline to the actual training output prefixes.
+# These buckets use SSE-S3, so the generated optional KMS/ACL grants are unnecessary.
+resource "aws_iam_role_policy" "training_write" {
+  role = aws_iam_role.dev.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject"]
+        Resource = "${data.aws_s3_bucket.training_stats.arn}/runs/*"
+      },
+      {
+        Effect   = "Allow"
+        Action   = ["s3:PutObject", "s3:AbortMultipartUpload"]
+        Resource = "${data.aws_s3_bucket.models.arn}/models/trained/*"
+      }
+    ]
   })
 }
 

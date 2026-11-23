@@ -44,17 +44,12 @@ Use `--project`, `--region`, `--repository`, `--image-tag`, `--modal-profile`, o
 Git state. If preparation fails after publication, it prints commands to retry
 preparation without rebuilding or reusing an immutable tag.
 
-The wrapper checks both lockfiles before contacting AWS. After changing root
-package dependencies or extras, refresh both and commit the results:
+The wrapper checks the root lockfile before contacting AWS. After changing
+package dependencies or extras, refresh it and commit the result:
 
 ```bash
 uv lock
-uv lock --project infra/analysis-runtime
 ```
-
-The analysis project depends on the root package by local path, so its lockfile
-also records the root package's metadata, including extras it does not install.
-A successful root `uv lock --check` alone does not validate the analysis lockfile.
 
 To run only the build trigger manually:
 
@@ -93,31 +88,15 @@ uv run --locked --extra modal python -m infra.modal.prepare_image
 Subsequent Modal tasks reference the prepared named image without importing it
 again. EC2 users can pull the printed ECR image URI directly.
 
-## GPU analysis environment
+## CPU analysis and GPU inference environment
 
-The shared ECR image now uses `nvidia/cuda:12.9.1-devel-ubuntu22.04` and uv-managed
-Python 3.11.12. Inference keeps `/app/.venv`; cuML analysis uses the separately
-locked `/app/.analysis-venv`, defined by `infra/analysis-runtime`. Both environments
-install the same `cs182_project` library. Root `uv sync --all-extras` does not
-install cuML on workstations.
-
-The development toolkit supplies NVRTC required by RAPIDS. GPU hosts must support
-the image's CUDA requirement; an older EC2 driver may need upgrading before using
-this image. The larger CUDA/cuML layers are cached and exported using the same
-eStargz workflow. CodeBuild checks dependency consistency in the GPU environment
-without importing GPU-dependent cuML on its CPU-only worker. The offline suite
-continues to exercise real tiny models and scientific fixtures on CPU.
-
-After publication/preparation, validate an actual GPU run using:
-
-```bash
-uv run --locked --extra modal modal run infra/modal/analyze_activations.py \
-  --run-s3-uri s3://ACTIVATION_BUCKET/runs/RUN_ID/manifest.json
-```
-
-Confirm logs show GPU dispatch for logistic regression, Ridge, and PCA, then inspect
-the analyses bucket's completed artifacts and phase timings. GPU numerical results
-need not be identical to CPU fits; evaluate metrics and direction invariants.
+The shared ECR image uses `python:3.11.12-slim-bookworm` and one locked
+`/app/.venv`. CPU analysis uses NumPy/SciPy/scikit-learn with joblib layer
+parallelism. PyTorch's CUDA wheels continue to support GPU inference, activation
+collection, and training. The CUDA development toolkit and separate cuML
+analysis environment are no longer needed. CodeBuild checks dependency
+consistency and runs the offline scientific/model fixtures in this shared
+environment before publishing the image.
 
 ## Build and cache behavior
 

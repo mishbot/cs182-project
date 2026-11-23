@@ -108,6 +108,33 @@ class DiscoveryTest(unittest.TestCase):
         self.assertTrue(all(call.kwargs["region_name"] == "us-west-2" for call in self.session.client.call_args_list))
         self.ecr.describe_repositories.assert_called_once_with(repositoryNames=["another-project-runtime"])
 
+    def test_explicit_model_does_not_require_the_original_model_to_be_seeded(self):
+        imported = "s3://imported-models/models/finetuned"
+        self.model.update(model_id="finetuned", revision="import-revision", artifact_kind="modal_volume_import")
+        self.model.pop("upstream")
+        read = self.s3.get_object.side_effect
+
+        def only_imported_model(**kwargs):
+            if kwargs["Bucket"].endswith("-models") and kwargs["Bucket"] != "imported-models":
+                raise self.s3.exceptions.NoSuchKey("Original model is not seeded")
+            return read(**kwargs)
+
+        self.s3.get_object.side_effect = only_imported_model
+        values = discover_modal_environment(self.session, dataset="wildguardmix", model_s3_uri=imported + "/")
+        self.assertEqual(values["MODEL_URI"], imported)
+        self.s3.get_object.assert_any_call(Bucket="imported-models", Key="models/finetuned/" + MANIFEST)
+
+    def test_invalid_explicit_model_uri_fails_before_aws_requests(self):
+        with self.assertRaises(ValueError):
+            discover_modal_environment(self.session, model_s3_uri="https://example.com/model")
+        self.session.client.assert_not_called()
+
+    def test_missing_explicit_model_manifest_fails_without_fallback(self):
+        self.s3.get_object.side_effect = self.s3.exceptions.NoSuchKey("missing")
+        with self.assertRaisesRegex(ValueError, "Selected model has no completion manifest"):
+            discover_modal_environment(self.session, model_s3_uri="s3://models/imported")
+        self.s3.get_object.assert_called_once_with(Bucket="models", Key="imported/" + MANIFEST)
+
     def test_no_tagged_images_fails(self):
         self.ecr.get_paginator.return_value.paginate.return_value = [{"imageDetails": []}]
         with self.assertRaisesRegex(ValueError, "No tagged runtime images"):

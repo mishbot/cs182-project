@@ -41,6 +41,34 @@ def fixture_run():
                               np.tile(np.arange(100, dtype=np.int32), (40, 1)), np.full((40, 100), .001))
 
 
+@unittest.skipUnless(AVAILABLE, "Install the analysis extra")
+class ParallelAnalysisTest(unittest.TestCase):
+    def test_serial_and_process_workers_agree(self):
+        run = fixture_run()
+        serial = analysis.analyze_activations(run, include_adversarial=True, workers=1)
+        parallel = analysis.analyze_activations(run, include_adversarial=True, workers=2)
+        for expected, actual in zip(serial.groups, parallel.groups):
+            self.assertEqual([layer.layer for layer in actual.layers], [0, 1, 2])
+            np.testing.assert_array_equal(expected.fold_ids, actual.fold_ids)
+            for left, right in zip(expected.layers, actual.layers):
+                self.assertEqual(left.logistic, right.logistic)
+                self.assertEqual(left.midpoint, right.midpoint)
+                self.assertEqual(left.refusal_regression.r2 is None, right.refusal_regression.r2 is None)
+                np.testing.assert_allclose(
+                    [left.refusal_regression.rmse, left.refusal_regression.mae],
+                    [right.refusal_regression.rmse, right.refusal_regression.mae], atol=1e-10)
+                if left.refusal_regression.r2 is not None:
+                    np.testing.assert_allclose(left.refusal_regression.r2,
+                                               right.refusal_regression.r2, atol=1e-10)
+                for name in ("logistic_predictions", "midpoint_predictions", "refusal_predictions"):
+                    np.testing.assert_allclose(getattr(left, name), getattr(right, name), atol=1e-10)
+                for name in ("logistic_fit", "refusal_fit"):
+                    np.testing.assert_allclose(getattr(left, name).direction,
+                                               getattr(right, name).direction, atol=1e-10)
+                np.testing.assert_allclose(left.projection.coordinates, right.projection.coordinates,
+                                           atol=1e-10)
+
+
 class MemoryRunS3:
     def __init__(self):
         self.objects = {}

@@ -28,7 +28,10 @@ analysis = [
     "numpy>=1.26",
     "pyarrow==19.0.1",
     "scikit-learn>=1.5,<2",
+    "joblib>=1.4,<2",
+    "threadpoolctl>=3,<4",
     "plotly>=6,<8",
+    "kaleido>=1,<2",
 ]
 build = [
     "boto3==1.38.23",

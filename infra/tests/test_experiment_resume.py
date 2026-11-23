@@ -266,7 +266,8 @@ class CheckpointTest(unittest.TestCase):
             if "get-caller-identity" in command:
                 output = '{"Account": "123456789012"}'
             elif "infra/scripts/discover_modal.py" in command:
-                output = "image:pinned\ts3://models/original\ts3://datasets/original\ts3://activations/runs\ts3://analyses/runs\ts3://stats/runs\n"
+                model = command[command.index("--model-s3-uri") + 1] if "--model-s3-uri" in command else "s3://models/original"
+                output = f"image:pinned\t{model}\ts3://datasets/original\ts3://activations/runs\ts3://analyses/runs\ts3://stats/runs\n"
             elif "--stage" in command:
                 name = command[command.index("--stage") + 1]
                 if name == fail_stage:
@@ -305,6 +306,44 @@ class CheckpointTest(unittest.TestCase):
                 self.invoke(["--resume", str(path), "--sample-size", "2000"], execute)
             execute.assert_not_called()
             self.assertEqual(path.read_bytes(), original)
+
+    def test_selected_model_is_used_for_collection_and_editing_and_preserved_on_resume(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "experiment.json"
+            commands = []
+            model = "s3://models/finetuned"
+            self.assertEqual(self.invoke(["--results-file", str(path), "--model-s3-uri", model + "/"],
+                                         self.fake_execute(commands)), 0)
+            saved = json.loads(path.read_text())
+            self.assertEqual(saved["original_model"], model)
+            self.assertEqual(saved["configuration"]["model_s3_uri"], model)
+            self.assertEqual(saved["sample_size"], 256)
+            for name in ("original_activations", "orthogonalized_model"):
+                self.assertEqual(saved["stages"][name]["options"]["model_s3_uri"], model)
+            commands.clear()
+            self.assertEqual(self.invoke(["--resume", str(path)], self.fake_execute(commands)), 0)
+            self.assertFalse(any("infra/scripts/discover_modal.py" in command for command, _ in commands))
+            self.assertEqual(json.loads(path.read_text())["original_model"], model)
+            execute = Mock()
+            with self.assertRaises(SystemExit):
+                self.invoke(["--resume", str(path), "--model-s3-uri", "s3://models/different"], execute)
+            execute.assert_not_called()
+
+    def test_older_v2_checkpoint_without_model_option_still_resumes(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "experiment.json"
+            self.invoke(["--results-file", str(path)], self.fake_execute([]))
+            saved = json.loads(path.read_text())
+            saved["configuration"].pop("model_s3_uri")
+            state.atomic_save(path, saved)
+            self.assertEqual(self.invoke(["--resume", str(path)], self.fake_execute([])), 0)
+            self.assertEqual(json.loads(path.read_text())["original_model"], saved["original_model"])
+
+    def test_model_override_and_seeding_are_mutually_exclusive(self):
+        execute = Mock()
+        with self.assertRaises(SystemExit):
+            self.invoke(["--model-s3-uri", "s3://models/finetuned", "--seed-model"], execute)
+        execute.assert_not_called()
 
     def test_resume_dry_run_does_not_execute_commands_or_write_state(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -435,13 +474,13 @@ class StageWorkerTest(unittest.TestCase):
         from infra.modal import _runner
 
         process = Mock(returncode=0)
-        process.stdout = io.StringIO("GPU analysis progress\ns3://analyses/run/analysis/report.html\n")
+        process.stdout = io.StringIO("CPU analysis progress\ns3://analyses/run/analysis/report.html\n")
         process.wait.return_value = 0
         with patch.object(subprocess, "Popen", return_value=process), \
                 contextlib.redirect_stdout(io.StringIO()) as output:
             result = _runner.execute_analysis({"run_s3_uri": self.uri}, capture_result=True)
         self.assertEqual(result, "s3://analyses/run/analysis/report.html")
-        self.assertIn("GPU analysis progress", output.getvalue())
+        self.assertIn("CPU analysis progress", output.getvalue())
 
     def test_worker_serializes_through_stable_package_when_launcher_is_loaded_by_basename(self):
         from modal._serialization import deserialize, serialize

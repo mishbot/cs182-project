@@ -17,27 +17,37 @@ mock_provider "aws" {
     target = data.aws_s3_bucket.analyses
     values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-analyses" }
   }
+  override_data {
+    target = data.aws_s3_bucket.training_stats
+    values = { region = "us-east-1", arn = "arn:aws:s3:::fixture-training-stats" }
+  }
   mock_data "aws_ecr_repository" {
     defaults = { arn = "arn:aws:ecr:us-east-1:123456789012:repository/fixture-runtime" }
   }
 }
 
 variables {
-  availability_zone = "us-east-1a"
-  project           = "fixture-qwen"
-  model_bucket      = "fixture-models"
-  dataset_bucket    = "fixture-datasets"
-  activation_bucket = "fixture-activations"
-  analysis_bucket   = "fixture-analyses"
-  ecr_repository    = "fixture-runtime"
-  data_volume_id    = "vol-0123456789abcdef0"
-  ssh_public_key    = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureKeyOnlyForOfflineTests"
-  ssh_cidr          = "203.0.113.10/32"
-  ami_id            = "ami-0123456789abcdef0"
+  availability_zone     = "us-east-1a"
+  project               = "fixture-qwen"
+  model_bucket          = "fixture-models"
+  dataset_bucket        = "fixture-datasets"
+  activation_bucket     = "fixture-activations"
+  analysis_bucket       = "fixture-analyses"
+  training_stats_bucket = "fixture-training-stats"
+  ecr_repository        = "fixture-runtime"
+  data_volume_id        = "vol-0123456789abcdef0"
+  ssh_public_key        = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIFixtureKeyOnlyForOfflineTests"
+  ssh_cidr              = "203.0.113.10/32"
+  ami_id                = "ami-0123456789abcdef0"
 }
 
 run "dev_resources" {
   command = plan
+
+  assert {
+    condition     = jsondecode(aws_iam_role_policy.training_write.policy).Statement[0].Resource == "arn:aws:s3:::fixture-training-stats/runs/*" && toset(jsondecode(aws_iam_role_policy.training_write.policy).Statement[0].Action) == toset(["s3:PutObject"]) && jsondecode(aws_iam_role_policy.training_write.policy).Statement[1].Resource == "arn:aws:s3:::fixture-models/models/trained/*"
+    error_message = "Training writes must be restricted to statistics runs and trained models."
+  }
 
   assert {
     condition     = toset(jsondecode(aws_iam_role_policy.read.policy).Statement[1].Resource) == toset(["arn:aws:s3:::fixture-models/*", "arn:aws:s3:::fixture-datasets/*"]) && toset(jsondecode(aws_iam_role_policy.read.policy).Statement[1].Action) == toset(["s3:GetObject"])
