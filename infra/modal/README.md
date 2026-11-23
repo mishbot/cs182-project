@@ -262,7 +262,7 @@ Use `--dry-run` to preview commands; see [CodeBuild](../codebuild/README.md)
 for options and setup.
 
 ```bash
-uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --sample-size 1000
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py
 # Preview every command without running anything:
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --dry-run
 ```
@@ -272,6 +272,9 @@ analyze, orthogonalize using `diff_of_means_max_f1`, collect again, and analyze
 again. The stage worker uses the existing library and analysis CLI. Both collections share the dataset, partition, sample size, seed, batch
 size, and input limit. Each downstream command receives the exact preceding
 result URI, so another concurrent run cannot change its inputs via a latest lookup.
+The default is 256 activation samples per collection: 128 harmful and 128
+harmless prompts for the refusal-direction corpus. Override the total with
+`--sample-size`. Resumed experiments retain their saved sample size.
 It streams logs, prints commands, prepares the discovered image, prompts with a
 bell if AWS login needs refreshing, and saves an incremental JSON URI summary.
 `--modal-profile` applies consistently to preparation and every job.

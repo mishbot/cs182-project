@@ -105,7 +105,8 @@ def result_uri(result, *, dry_run, placeholder, suffix=None):
 def main():
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--dataset", choices=["refusal-direction", "wildguardmix"], default="refusal-direction")
-    parser.add_argument("--sample-size", type=int, default=1000)
+    parser.add_argument("--sample-size", type=int, default=256,
+                        help="Total activation samples (default: 256, balanced as 128 harmful and 128 harmless for refusal-direction)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--batch-size", type=int, default=4)
     parser.add_argument("--max-input-tokens", type=int, default=2048)

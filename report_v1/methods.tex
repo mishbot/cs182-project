@@ -1,0 +1,23 @@
+\documentclass[10pt,letterpaper]{article}
+\usepackage[margin=0.65in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb,enumitem,xcolor,hyperref,microtype,titlesec}
+\usepackage[backend=biber,style=authoryear,maxcitenames=1,maxbibnames=1,giveninits=true,uniquename=false,doi=false,url=false]{biblatex}
+\addbibresource{references.bib}
+\hypersetup{colorlinks=true,citecolor=black,urlcolor=blue!55!black}
+\setlength{\parindent}{0pt}
+\setlength{\parskip}{3pt}
+\titleformat{\section}{\normalsize\bfseries}{}{0pt}{}
+\titlespacing*{\section}{0pt}{8pt}{3pt}
+\setlist[itemize]{leftmargin=*,nosep,topsep=2pt}
+\renewcommand*{\bibfont}{\footnotesize}
+\setlength{\bibitemsep}{1pt}
+\begin{document}
+
+We reproduced the experimental setup by Arditi et. al for evaluation, with the following differences:
+\begin{itemize}
+    \item Although we use the same datasets, we sample from them differently to make sure that it is possible to reproduce their results with a different random sample.
+    \item We replace their direction selection algorithm with a simpler approach that chooses the refusal direction from the layer that most effectively separates refusal from non-refusal using the decision boundary that is equidistant from the mean harmful activation and mean harmless activation.
+    \item 
+\end{itemize}
+\end{document}
