@@ -18,7 +18,7 @@ def main():
         import boto3
 
         values = discover_modal_environment(boto3.Session(), project=args.project, region=args.region, dataset=args.dataset)
-        ordered = [values[name] for name in ["CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI"]]
+        ordered = [values[name] for name in ["CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI", "TRAINING_STATS_URI"]]
         if any(not value or any(char in value for char in "\t\r\n") for value in ordered):
             raise ValueError("Discovered values must be nonempty single-line strings.")
         print("\t".join(ordered))

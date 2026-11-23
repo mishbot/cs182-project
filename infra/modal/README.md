@@ -251,6 +251,16 @@ S3 requests/storage, and applicable data transfer incur charges.
 
 ## Full original-Qwen experiment
 
+To rebuild and prepare the runtime first, after committing and pushing changes:
+
+```bash
+uv run --locked --extra modal python infra/scripts/rebuild_modal_image.py
+```
+
+The wrapper runs CodeBuild and prepares the exact published image in Modal.
+Use `--dry-run` to preview commands; see [CodeBuild](../codebuild/README.md)
+for options and setup.
+
 ```bash
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --sample-size 1000
 # Preview every command without running anything:

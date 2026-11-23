@@ -156,6 +156,10 @@ It uses CodeBuild and a persistent ECR layer cache, runs offline image tests, an
 publishes only after those tests pass. See [the CodeBuild guide](codebuild/README.md)
 for setup, logs, cancellation, and cold/warm build checks.
 
+For a single command that also prepares the resulting image in Modal, use
+`uv run --locked --extra modal python infra/scripts/rebuild_modal_image.py`.
+Add `--dry-run` to preview it. The manual build-only commands follow.
+
 ```bash
 REGION=us-east-1
 REPOSITORY=$(tofu -chdir=infra/persistent output -raw repository_url)

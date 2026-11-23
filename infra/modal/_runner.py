@@ -10,6 +10,8 @@ import modal
 
 CACHE_VOLUME = "cs182-project-cache"
 CACHE_MOUNT = "/snapshot-cache"
+TRAINING_VOLUME = "cs182-runs"
+TRAINING_MOUNT = "/runs"
 logger = logging.getLogger(__name__)
 # Bump when the import/adaptation recipe changes, so old prepared images cannot
 # silently stand in for the new recipe. ECR references must be immutable.
@@ -108,6 +110,20 @@ def execute_analysis(options):
 def execute_task(task, options):
     """Remote worker: use the image's library and persist only input snapshots."""
     import boto3
+    if task == "train_defense":
+        from botocore.config import Config
+        from cs182_project.training import train
+
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+        output_volume = modal.Volume.from_name(TRAINING_VOLUME)
+        s3 = boto3.client("s3", config=Config(
+            retries={"total_max_attempts": 3, "mode": "standard"},
+            connect_timeout=5, read_timeout=10,
+        ))
+        try:
+            return train(s3, output_dir=TRAINING_MOUNT, persist=output_volume.commit, **options)
+        finally:
+            output_volume.commit()
     from infra.modal._cache import SnapshotCache
 
     logging.basicConfig(level=logging.INFO, format="%(message)s")
@@ -160,11 +176,14 @@ def run_task(task, options, *, gpu="T4", timeout=3600):
     credentials = aws_environment(boto3.Session())
     image = runtime_image(reference)
     volume = modal.Volume.from_name(CACHE_VOLUME, create_if_missing=True, version=2)
+    volumes = {CACHE_MOUNT: volume}
+    if task == "train_defense":
+        volumes[TRAINING_MOUNT] = modal.Volume.from_name(TRAINING_VOLUME, create_if_missing=True)
     worker_app = modal.App(f"cs182-project-{task.replace('_', '-')}")
     worker = worker_app.function(
         image=image,
         secrets=[modal.Secret.from_dict(credentials)],
-        volumes={CACHE_MOUNT: volume},
+        volumes=volumes,
         gpu=None if options["device"] == "cpu" else gpu,
         cpu=2,
         memory=16384,

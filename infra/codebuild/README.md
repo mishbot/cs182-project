@@ -27,6 +27,26 @@ revision.
 From the repository root:
 
 ```bash
+uv run --locked --extra modal python infra/scripts/rebuild_modal_image.py
+# Preview the commands without making AWS or Modal requests:
+uv run --locked --extra modal python infra/scripts/rebuild_modal_image.py --dry-run
+```
+
+This wrapper checks the checkout, refreshes AWS login interactively if needed,
+discovers `PROJECT-runtime` in ECR, generates a unique tag, runs the existing
+CodeBuild trigger, and prepares the exact returned image in Modal. It streams
+logs and prints an `export CS182_MODAL_IMAGE=...` command for your calling shell.
+It needs neither local OpenTofu state nor seeded models/datasets. Defaults match
+the experiment wrapper: project `cs182-cddr`, region `us-east-1` (unless set in the
+environment), and AWS profile `cs182-tools` (unless `AWS_PROFILE` is set).
+Use `--project`, `--region`, `--repository`, `--image-tag`, `--modal-profile`, or
+`--remote-login` as needed. Commit and push first; the wrapper does not change
+Git state. If preparation fails after publication, it prints commands to retry
+preparation without rebuilding or reusing an immutable tag.
+
+To run only the build trigger manually:
+
+```bash
 uv sync --locked --extra build
 REGION=us-east-1
 REPOSITORY=$(tofu -chdir=infra/persistent output -raw repository_url)

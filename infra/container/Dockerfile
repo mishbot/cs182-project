@@ -16,13 +16,13 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 COPY pyproject.toml uv.lock /app/
 # Cache both dependency environments independently of the project implementation.
-RUN uv sync --locked --extra runtime --extra analysis --no-dev --no-install-project
+RUN uv sync --locked --extra runtime --extra analysis --extra training --no-dev --no-install-project
 COPY infra/analysis-runtime/pyproject.toml infra/analysis-runtime/uv.lock /app/infra/analysis-runtime/
 RUN UV_PROJECT_ENVIRONMENT=/app/.analysis-venv uv sync \
     --project infra/analysis-runtime --locked --no-dev --no-install-package cs182-project
 COPY README.md /app/
 COPY cs182_project /app/cs182_project
-RUN uv sync --locked --extra runtime --extra analysis --no-dev --no-editable
+RUN uv sync --locked --extra runtime --extra analysis --extra training --no-dev --no-editable
 RUN UV_PROJECT_ENVIRONMENT=/app/.analysis-venv uv sync \
     --project infra/analysis-runtime --locked --no-dev --no-editable
 COPY infra/scripts/*.py /app/

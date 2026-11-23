@@ -18,6 +18,11 @@ dev = [
 ]
 
 [project.optional-dependencies]
+training = [
+    "cs182-project[runtime]",
+    "peft==0.10.0",
+    "accelerate==0.28.0",
+]
 analysis = [
     "boto3==1.38.23",
     "numpy>=1.26",

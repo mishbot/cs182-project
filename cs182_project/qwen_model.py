@@ -60,12 +60,17 @@ def load_model(
     *,
     config: PretrainedConfig | None = None,
     preserve_dtype: bool = False,
+    for_training: bool = False,
 ) -> PreTrainedModel:
     import torch
     from transformers import AutoModelForCausalLM
 
     config = config or load_local_model_config(model_dir)
     dtype = torch.float16 if device == "cuda" else torch.float32
+    if for_training:
+        dtype = (
+            torch.bfloat16 if device == "cuda" and torch.cuda.is_bf16_supported() else torch.float32
+        )
     if preserve_dtype:
         from pathlib import Path
 
