@@ -163,6 +163,8 @@ class DiscoveryTest(unittest.TestCase):
         def execute(command, *, env, **kwargs):
             commands.append((command, dict(env)))
             output = "image:tag\tmodel\tdataset\toutput\tanalyses\tstats\n" if "infra/scripts/discover_modal.py" in command else ""
+            if "get-caller-identity" in command:
+                output = '{"Account": "123456789012"}'
             return subprocess.CompletedProcess(command, 0, stdout=output)
 
         with tempfile.TemporaryDirectory() as directory, \
@@ -171,9 +173,9 @@ class DiscoveryTest(unittest.TestCase):
                 patch.object(experiment, "result_uri", side_effect=lambda result, **kwargs: kwargs["placeholder"]), \
                 patch("sys.stdout", new_callable=io.StringIO):
             self.assertEqual(experiment.main(), 0)
-        preparation = next(env for command, env in commands if "infra.modal.prepare_image" in command)
-        self.assertEqual(preparation["CS182_MODAL_IMAGE"], "image:tag")
-        self.assertEqual(preparation["TRAINING_STATS_URI"], "stats")
+        collection = next(env for command, env in commands if "original_activations" in command)
+        self.assertEqual(collection["CS182_MODAL_IMAGE"], "image:tag")
+        self.assertEqual(collection["TRAINING_STATS_URI"], "stats")
         modal_runs = [(command, env) for command, env in commands
                       if any(command[i:i + 2] == ["modal", "run"] for i in range(len(command) - 1))]
         self.assertEqual(len(modal_runs), 6)

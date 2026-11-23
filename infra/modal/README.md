@@ -267,23 +267,84 @@ uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --samp
 uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py --dry-run
 ```
 
-The local wrapper invokes the existing Modal entrypoints in sequence: collect,
+The local wrapper invokes a durable Modal stage entrypoint in sequence: collect,
 analyze, orthogonalize using `diff_of_means_max_f1`, collect again, and analyze
-again. Both collections share the dataset, partition, sample size, seed, batch
+again. The stage worker uses the existing library and analysis CLI. Both collections share the dataset, partition, sample size, seed, batch
 size, and input limit. Each downstream command receives the exact preceding
 result URI, so another concurrent run cannot change its inputs via a latest lookup.
 It streams logs, prints commands, prepares the discovered image, prompts with a
 bell if AWS login needs refreshing, and saves an incremental JSON URI summary.
 `--modal-profile` applies consistently to preparation and every job.
 
-The wrapper uses `modal run --detach` and sets `CS182_MODAL_DETACH=1` so the
-entrypoints' nested worker apps are detached too. It still waits for each job's
-result before starting the next stage. An already submitted worker can finish
-if the workstation sleeps or disconnects, but subsequent stages require the
-local wrapper to run. Reconnection and automatic recovery of a lost result are
-not guaranteed; completed artifacts remain in S3. Stopping the local wrapper
-does not cancel detached remote work; stop its app in the Modal dashboard when
-cancellation is intended.
+The wrapper uses `modal run --detach` and detaches each nested worker app too.
+It still waits for each job's result before starting the next stage. An already
+submitted worker can finish if the workstation sleeps or disconnects, but
+subsequent stages require the local wrapper to run. Stopping the local wrapper
+does not cancel remote work; stop its app in the Modal dashboard when needed.
+
+### Resume after interruption
+
+Keep the experiment JSON printed by the wrapper, then run:
+
+```bash
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
+  --resume reports/activations/experiment-TIMESTAMP.json
+# Preview recovery without contacting AWS/Modal or changing the checkpoint:
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
+  --resume reports/activations/experiment-TIMESTAMP.json --dry-run
+```
+
+Resume restores the exact image, model, dataset, partition, and experiment
+settings. Conflicting options fail before submission; use a new experiment to
+change settings. Fresh invocations always start new experiments, and an existing
+`--results-file` cannot be overwritten. Checkpoints are replaced atomically and
+locked against simultaneous local wrappers using the same file.
+
+Stages record their input fingerprint, attempt, Modal call ID, and completion
+receipt under `ANALYSIS_URI/experiments/EXPERIMENT_ID/`. Workers write their own
+call IDs and result receipts, so a job that finishes after disconnection can be
+recovered even if its URI was never saved locally. Resume verifies completion
+manifests, upstream manifest hashes, settings/provenance, and artifact object
+sizes before skipping work. It does not download model weights or activation
+shards to the workstation. Output manifests are also hashed to detect changes
+after completion; artifact content checksums are still checked by downstream
+library readers. Incomplete uploads never count as success.
+
+A running call is awaited; a confirmed failed attempt is retried with a new
+attempt ID. If submission was interrupted before either side recorded a call ID,
+resume stops without submitting a duplicate. Wait for its remote started/result
+record and resume again. Expired or unavailable call history is not treated as
+proof of failure. A hard crash after publishing artifacts but before recording a
+result can require explicit adoption:
+
+```bash
+uv run --locked --extra modal python infra/scripts/run_qwen_experiment.py \
+  --resume reports/activations/experiment-TIMESTAMP.json \
+  --adopt-stage original_activations=s3://ACTIVATIONS_BUCKET/runs/RUN_ID/manifest.json
+```
+
+Adoption verifies artifact provenance and settings. It can also import outputs
+missing from an older summary, whose jobs have no durable call records. Historical
+runtime-image identity cannot be proven from older artifact manifests; adopting
+an unrecorded output is an explicit operator choice. Adoption does not cancel
+any existing remote call. Valid older summaries are upgraded on resume, keeping
+their recorded inputs and result URIs. Incomplete older summaries without pinned
+inputs must be replaced with a new experiment checkpoint before adopting results.
+
+Stage names are `seed_model`, `partition`, `original_activations`,
+`original_analysis`, `orthogonalized_model`, `orthogonalized_activations`, and
+`orthogonalized_analysis`. Multiple `--adopt-stage` options are supported.
+Model seeding and default partition publication reuse valid existing artifacts.
+Image preparation runs only when new work needs the pinned image, once per
+wrapper invocation. These adapters are uploaded from the checkout, so adding
+resume support itself requires no ECR rebuild.
+
+Local and forwarded worker credentials need `s3:GetObject` and `s3:PutObject` on
+the experiment-record prefix in the analyses bucket, in addition to the normal
+model/dataset/activation/analysis permissions. Validation also needs
+`s3:GetObject` permission for `HeadObject` on referenced artifacts. Existing worker
+credentials retain their original expiry; refreshing local login does not update
+a running worker's credentials.
 
 The original-model ECR runtime must already be built and published. Optional
 `--seed-model` and `--partition-dataset` flags perform first-time input setup using

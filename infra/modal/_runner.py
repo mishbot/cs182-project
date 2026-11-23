@@ -85,7 +85,7 @@ def runtime_image(reference):
     return modal.Image.from_name(modal_image_name(reference)).add_local_python_source("infra.modal")
 
 
-def execute_analysis(options):
+def execute_analysis(options, *, capture_result=False):
     """Use the image's isolated GPU environment; inherit stdout/stderr for Modal streaming."""
     # Keep the worker in the uploaded package: a CLI file loaded by basename
     # would collide with the image's unrelated /app/analyze_activations.py.
@@ -104,7 +104,22 @@ def execute_analysis(options):
                 command.extend(["--" + key.replace("_", "-"), str(value)])
         # Avoid leaking the parent's venv selection into the subprocess's libraries.
         environment = {**os.environ, "VIRTUAL_ENV": "/app/.analysis-venv"}
-        subprocess.run(command, check=True, env=environment)
+        if not capture_result:
+            subprocess.run(command, check=True, env=environment)
+            return None
+        process = subprocess.Popen(command, env=environment, stdout=subprocess.PIPE,
+                                   stderr=subprocess.STDOUT, text=True, bufsize=1)
+        result = None
+        for line in process.stdout:
+            print(line, end="", flush=True)
+            candidate = line.strip()
+            if re.fullmatch(r"s3://[^\s]+/report\.html", candidate):
+                result = candidate
+        if process.wait():
+            raise subprocess.CalledProcessError(process.returncode, command)
+        if result is None:
+            raise RuntimeError("Analysis succeeded but printed no report S3 URI")
+        return result
 
 
 def execute_task(task, options):

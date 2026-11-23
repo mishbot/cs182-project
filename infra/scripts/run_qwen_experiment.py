@@ -7,6 +7,7 @@ refusal-direction corpus. Use --seed-model and --partition-dataset for first-tim
 
 import argparse
 from datetime import datetime, timezone
+import fcntl
 from functools import partial
 import json
 import os
@@ -15,10 +16,59 @@ import re
 import shlex
 import subprocess
 import sys
+import uuid
 
 ROOT = Path(__file__).resolve().parents[2]
+# Direct script execution puts infra/scripts, rather than the repository root,
+# on sys.path. The recovery helpers are uploaded adapter code, not the ML wheel.
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from infra.modal._experiment import STAGES, atomic_save
+from cs182_project.model_artifacts import parse_s3_uri
 ENVIRONMENT_KEYS = ("CS182_MODAL_IMAGE", "MODEL_URI", "DATASET_URI", "OUTPUT_URI", "ANALYSIS_URI", "TRAINING_STATS_URI")
 ANSI = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+CONFIGURATION_KEYS = ("dataset", "sample_size", "seed", "batch_size", "max_input_tokens", "folds",
+                      "include_adversarial", "project", "region", "modal_profile",
+                      "partition_s3_uri", "seed_model", "partition_dataset")
+
+
+def restore_configuration(parser, args):
+    if not args.resume:
+        if args.adopt_stage:
+            parser.error("--adopt-stage requires --resume")
+        return None
+    if args.results_file:
+        parser.error("--resume updates its checkpoint; omit --results-file")
+    try:
+        path = args.resume.expanduser()
+        if not path.is_absolute():
+            path = ROOT / path
+        state = json.loads(path.read_text())
+        if not isinstance(state, dict) or state.get("schema_version") not in (None, 2):
+            raise ValueError("Unsupported experiment checkpoint")
+        saved = state.get("configuration")
+        if state.get("schema_version") == 2 and (not isinstance(saved, dict)
+                or any(key not in saved for key in CONFIGURATION_KEYS)):
+            raise ValueError("Checkpoint is missing its saved configuration")
+        if saved is None:
+            # Import the original URI-summary format without inventing new inputs.
+            saved = {key: state[key] for key in CONFIGURATION_KEYS if key in state}
+            saved.update(dataset=state.get("dataset_selection", "refusal-direction"),
+                         seed=state.get("sampling_seed", 0),
+                         partition_s3_uri=state.get("partition"))
+            if any(key not in state for key in ("original_model", "dataset", "runtime_image")):
+                raise ValueError("Legacy checkpoint lacks pinned inputs; start a new experiment and adopt completed stages")
+        explicit = {parser._option_string_actions[token.split("=", 1)[0]].dest
+                    for token in sys.argv[1:] if token.split("=", 1)[0] in parser._option_string_actions}
+        for key in CONFIGURATION_KEYS:
+            if key in saved:
+                if key in explicit and getattr(args, key) != saved[key]:
+                    raise ValueError(f"--{key.replace('_', '-')} conflicts with the saved experiment; start a new experiment")
+                setattr(args, key, saved[key])
+        args.resume = path
+        return state
+    except (OSError, ValueError, TypeError) as error:
+        parser.error(str(error))
 
 
 def execute(command, *, env, dry_run=False, check=True, interactive=False):
@@ -69,8 +119,12 @@ def main():
     parser.add_argument("--partition-s3-uri", help="Use the same custom partition for both collections")
     parser.add_argument("--remote-login", action="store_true", help="Use the AWS login helper's --remote browser flow")
     parser.add_argument("--results-file", type=Path, help="Incremental URI summary; defaults to reports/activations/experiment-TIMESTAMP.json")
+    parser.add_argument("--resume", type=Path, help="Resume a saved experiment, verifying and skipping completed stages")
+    parser.add_argument("--adopt-stage", action="append", default=[], metavar="STAGE=URI",
+                        help="Explicitly adopt a completed output when recovering a legacy/lost result (requires --resume)")
     parser.add_argument("--dry-run", action="store_true", help="Print commands with placeholder URIs; execute nothing")
     args = parser.parse_args()
+    restored = restore_configuration(parser, args)
     classes = 4 if args.dataset == "wildguardmix" else 2
     if args.folds < 2 or args.sample_size < classes * args.folds:
         parser.error(f"Use --folds >= 2 and --sample-size >= {classes} * --folds for balanced analysis")
@@ -83,30 +137,81 @@ def main():
 
     env = dict(os.environ)
     env.setdefault("AWS_PROFILE", "cs182-tools")
-    env.update(AWS_REGION=args.region, AWS_DEFAULT_REGION=args.region, CS182_MODAL_DETACH="1")
+    env.update(AWS_REGION=args.region, AWS_DEFAULT_REGION=args.region, AWS_PAGER="", CS182_MODAL_DETACH="1")
     if args.modal_profile:
         env["MODAL_PROFILE"] = args.modal_profile
+    args.modal_profile = env.get("MODAL_PROFILE")
     run = partial(execute, env=env, dry_run=args.dry_run)
     uv = ["uv", "run", "--project", str(ROOT), "--locked", "--extra", "modal"]
     scope = ["--project", args.project, "--region", args.region]
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
-    results_path = (args.results_file or Path("reports/activations") / f"experiment-{timestamp}.json").expanduser()
+    results_path = (args.resume or args.results_file or Path("reports/activations") / f"experiment-{timestamp}.json").expanduser()
     if not results_path.is_absolute():
         results_path = ROOT / results_path
-    results = {"sample_size": args.sample_size, "sampling_seed": args.seed, "folds": args.folds,
-               "batch_size": args.batch_size, "max_input_tokens": args.max_input_tokens,
-               "project": args.project, "region": args.region, "dataset_selection": args.dataset, "modal_profile": env.get("MODAL_PROFILE"),
-               "include_adversarial": args.include_adversarial, "rhat": "diff_of_means_max_f1"}
+    if not args.resume and results_path.exists():
+        parser.error("Results file already exists; use --resume or choose another --results-file")
+    adoptions = {}
+    for item in args.adopt_stage:
+        name, separator, uri = item.partition("=")
+        if not separator or name not in STAGES or not uri.startswith("s3://") or name in adoptions:
+            parser.error("--adopt-stage requires a unique STAGE=s3://... using a known experiment stage")
+        try:
+            parse_s3_uri(uri)
+        except ValueError as error:
+            parser.error(str(error))
+        adoptions[name] = uri
+    results = restored if restored is not None else {}
+    results.update(schema_version=2, project=args.project, region=args.region,
+                   sample_size=args.sample_size, sampling_seed=args.seed, folds=args.folds,
+                   batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,
+                   dataset_selection=args.dataset, modal_profile=args.modal_profile,
+                   include_adversarial=args.include_adversarial, rhat="diff_of_means_max_f1")
+    results["invocation_id"] = uuid.uuid4().hex
+    results.setdefault("experiment_id", uuid.uuid4().hex)
+    if not re.fullmatch(r"[0-9a-f]{32}", results["experiment_id"]):
+        parser.error("Checkpoint has an invalid experiment ID")
+    results.setdefault("stages", {})
+    results["configuration"] = {key: getattr(args, key) for key in CONFIGURATION_KEYS}
+
+    def save():
+        if not args.dry_run:
+            atomic_save(results_path, results)
 
     def remember(key, value):
         results[key] = value
-        if not args.dry_run:
-            results_path.parent.mkdir(parents=True, exist_ok=True)
-            results_path.write_text(json.dumps(results, indent=2) + "\n")
+        save()
         print(f"\n{key}: {value}", flush=True)
         return value
 
+    def stage(name, task, options, placeholder, suffix=None):
+        nonlocal environment
+        spec = results["stages"].setdefault(name, {"task": task, "options": options, "status": "pending"})
+        if spec["task"] != task or spec["options"] != options:
+            raise ValueError(f"Saved {name} inputs differ; start a new experiment")
+        if name in adoptions:
+            spec["adopted_uri"] = adoptions[name]
+        save()
+        if args.dry_run:
+            print(f"\n{name}: would verify remote completion/call records, reuse a valid result, or submit unfinished work", flush=True)
+        command = [*uv, "modal", "run", "--detach", "infra/modal/experiment_stage.py",
+                   "--checkpoint", str(results_path), "--stage", name]
+        uri = result_uri(run(command), dry_run=args.dry_run,
+                         placeholder=results.get(name, placeholder), suffix=suffix)
+        if not args.dry_run:
+            # The child saves pinned manifest hashes and remote progress too.
+            results.update(json.loads(results_path.read_text()))
+            environment = results["environment"]
+        return remember(name, uri)
+
+    checkpoint_lock = None
     try:
+        if not args.dry_run:
+            results_path.parent.mkdir(parents=True, exist_ok=True)
+            checkpoint_lock = results_path.with_suffix(results_path.suffix + ".lock").open("a")
+            fcntl.flock(checkpoint_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not args.resume and results_path.exists():
+                raise RuntimeError("Results file already exists; use --resume or choose another --results-file")
+        save()
         identity = run(["aws", "sts", "get-caller-identity"], check=False)
         if identity.returncode:
             if not sys.stdin.isatty():
@@ -124,63 +229,79 @@ def main():
                         "AWS_SECURITY_TOKEN", "AWS_DEFAULT_PROFILE"):
                 env.pop(key, None)
             env["AWS_PROFILE"] = "cs182-tools"
-            run(["aws", "sts", "get-caller-identity"])
+            identity = run(["aws", "sts", "get-caller-identity"])
 
+        account = results.get("account_id", "ACCOUNT_ID") if args.dry_run else json.loads(identity.stdout)["Account"]
+        if results.get("account_id", account) != account:
+            raise ValueError("AWS account differs from the saved experiment")
+        results["account_id"] = account
+        prefix = f"{args.project}-{account}-{args.region}"
+        from cs182_project.model_artifacts import MODEL_NAME, MODEL_REVISION
+
+        environment = results.setdefault("environment", {})
+        environment.setdefault("OUTPUT_URI", f"s3://{prefix}-activations/runs")
+        environment.setdefault("ANALYSIS_URI", f"s3://{prefix}-analyses/runs")
+        environment.setdefault("TRAINING_STATS_URI", f"s3://{prefix}-training-stats/runs")
+        if args.resume and "runtime_image" in results:
+            # Legacy summaries have no environment block; derive only roots.
+            environment.update(CS182_MODAL_IMAGE=results["runtime_image"],
+                               MODEL_URI=results["original_model"], DATASET_URI=results["dataset"])
+            if results.get("original_activations"):
+                environment["OUTPUT_URI"] = results["original_activations"].rsplit("/", 2)[0]
+            if results.get("original_analysis"):
+                environment["ANALYSIS_URI"] = results["original_analysis"].rsplit("/", 3)[0]
+        env.update(environment)
+        save()
         if args.seed_model:
-            run([*uv, "modal", "run", "--detach", "infra/modal/seed_model.py", *scope])
-        discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset])
-        if args.dry_run:
-            values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
-                      f"s3://DATASETS_BUCKET/datasets/{args.dataset}/REVISION", "s3://ACTIVATIONS_BUCKET/runs",
-                      "s3://ANALYSES_BUCKET/runs", "s3://TRAINING_STATS_BUCKET/runs"]
-        else:
-            rows = [ANSI.sub("", line).strip().split("\t") for line in discovered.stdout.splitlines()]
-            values = next((row for row in reversed(rows) if len(row) == len(ENVIRONMENT_KEYS)), None)
-            if values is None:
-                raise RuntimeError("Environment discovery did not print its six configuration fields.")
-        env.update(zip(ENVIRONMENT_KEYS, values))
+            stage("seed_model", "seed_model", dict(bucket=f"{prefix}-models", revision=MODEL_REVISION,
+                                                   prefix=f"models/{MODEL_NAME}/{MODEL_REVISION}"),
+                  f"s3://{prefix}-models/models/{MODEL_NAME}/{MODEL_REVISION}")
+        if not all(key in environment for key in ENVIRONMENT_KEYS):
+            discovered = run([*uv, "python", "infra/scripts/discover_modal.py", *scope, "--dataset", args.dataset])
+            if args.dry_run:
+                values = ["ECR_REPOSITORY:IMAGE_TAG", "s3://MODELS_BUCKET/models/Qwen-1_8B-Chat/REVISION",
+                          f"s3://DATASETS_BUCKET/datasets/{args.dataset}/REVISION", environment["OUTPUT_URI"],
+                          environment["ANALYSIS_URI"], environment["TRAINING_STATS_URI"]]
+            else:
+                rows = [ANSI.sub("", line).strip().split("\t") for line in discovered.stdout.splitlines()]
+                values = next((row for row in reversed(rows) if len(row) == len(ENVIRONMENT_KEYS)), None)
+                if values is None:
+                    raise RuntimeError("Environment discovery did not print its six configuration fields.")
+            environment.update(zip(ENVIRONMENT_KEYS, values))
+        env.update(environment)
         remember("original_model", env["MODEL_URI"])
         remember("dataset", env["DATASET_URI"])
         remember("runtime_image", env["CS182_MODAL_IMAGE"])
         if args.partition_s3_uri:
             remember("partition", args.partition_s3_uri)
         if args.partition_dataset:
-            run([*uv, "--extra", "seed", "python", "infra/scripts/partition_dataset.py",
-                 "--dataset-s3-uri", env["DATASET_URI"]])
-        run([*uv, "python", "-m", "infra.modal.prepare_image"])
+            stage("partition", "partition_dataset", dict(dataset_s3_uri=env["DATASET_URI"]),
+                  "s3://DATASETS_BUCKET/partitions/default.json")
 
         def collect(model, label):
             print(f"\n=== Collect {label} activations ===", flush=True)
-            command = [*uv, "modal", "run", "--detach", "infra/modal/collect_activations.py",
-                       "--model-s3-uri", model, "--dataset-s3-uri", env["DATASET_URI"],
-                       "--output-s3-uri", env["OUTPUT_URI"], "--split", "train",
-                       "--sample-size", str(args.sample_size), "--seed", str(args.seed),
-                       "--batch-size", str(args.batch_size), "--max-input-tokens", str(args.max_input_tokens)]
-            if args.partition_s3_uri:
-                command.extend(["--partition-s3-uri", args.partition_s3_uri])
-            uri = result_uri(run(command), dry_run=args.dry_run, suffix="/manifest.json",
-                             placeholder=f"{env['OUTPUT_URI']}/{label}/manifest.json")
-            return remember(f"{label}_activations", uri)
+            return stage(f"{label}_activations", "collect_activations",
+                         dict(model_s3_uri=model, dataset_s3_uri=env["DATASET_URI"],
+                              output_s3_uri=env["OUTPUT_URI"], split="train", sample_size=args.sample_size,
+                              seed=args.seed, batch_size=args.batch_size, max_input_tokens=args.max_input_tokens,
+                              partition_s3_uri=args.partition_s3_uri, device="auto"),
+                         f"{env['OUTPUT_URI']}/{label}/manifest.json", "/manifest.json")
 
         def analyze(activations, label):
             print(f"\n=== Analyze {label} activations ===", flush=True)
-            command = [*uv, "modal", "run", "--detach", "infra/modal/analyze_activations.py",
-                       "--run-s3-uri", activations, "--output-s3-uri", env["ANALYSIS_URI"],
-                       "--folds", str(args.folds), "--seed", str(args.seed), *scope]
-            if args.include_adversarial:
-                command.append("--include-adversarial")
-            uri = result_uri(run(command), dry_run=args.dry_run, suffix="/report.html",
-                             placeholder=f"{env['ANALYSIS_URI']}/{label}/ANALYSIS/report.html")
-            return remember(f"{label}_analysis", uri)
+            return stage(f"{label}_analysis", "analysis",
+                         dict(run_s3_uri=activations, output_s3_uri=env["ANALYSIS_URI"],
+                              folds=args.folds, seed=args.seed, project=args.project, region=args.region,
+                              include_adversarial=args.include_adversarial),
+                         f"{env['ANALYSIS_URI']}/{label}/ANALYSIS/report.html", "/report.html")
 
         original_activations = collect(env["MODEL_URI"], "original")
         original_report = analyze(original_activations, "original")
         print("\n=== Orthogonalize using non-adversarial difference of means at best F1 ===", flush=True)
-        edited = result_uri(run([*uv, "modal", "run", "--detach", "infra/modal/orthogonalize_model.py",
-                                 "--model-s3-uri", env["MODEL_URI"], "--analysis-s3-uri", original_report.rsplit("/", 1)[0],
-                                 "--rhat", "diff_of_means_max_f1", *scope]),
-                            dry_run=args.dry_run, placeholder="s3://MODELS_BUCKET/models/ORTHOGONALIZED_MODEL")
-        remember("orthogonalized_model", edited)
+        edited = stage("orthogonalized_model", "orthogonalize_model",
+                       dict(model_s3_uri=env["MODEL_URI"], analysis_s3_uri=original_report.rsplit("/", 1)[0],
+                            rhat="diff_of_means_max_f1", device="auto"),
+                       "s3://MODELS_BUCKET/models/ORTHOGONALIZED_MODEL")
         edited_activations = collect(edited, "orthogonalized")
         analyze(edited_activations, "orthogonalized")
         print("\n" + ("Dry run complete; nothing was executed." if args.dry_run else f"\aComplete. Results: {results_path}"))
@@ -188,9 +309,12 @@ def main():
     except KeyboardInterrupt:
         print("\nInterrupted. Completed-step URIs, if any, are in " + str(results_path), file=sys.stderr)
         return 130
-    except (OSError, RuntimeError, subprocess.CalledProcessError, EOFError) as error:
+    except (OSError, RuntimeError, ValueError, KeyError, subprocess.CalledProcessError, EOFError) as error:
         print(f"\a\nExperiment stopped: {error}\nCompleted-step URIs, if any: {results_path}", file=sys.stderr)
         return 1
+    finally:
+        if checkpoint_lock:
+            checkpoint_lock.close()
 
 
 if __name__ == "__main__":
