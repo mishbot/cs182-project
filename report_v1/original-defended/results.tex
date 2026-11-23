@@ -14,8 +14,33 @@
 \setlength{\bibitemsep}{1pt}
 \begin{document}
 
-We found that it did not work well to select the refusal direction based on ridge-regularized linear regression on refusal score as a function of activation. The predictor we obtained by this method did not attain high precision and recall as a detector of harmful inputs in comparison to the other two predictors.
+\section{Comparison on non-adversarial prompts}
 
-However, both logistic regression and difference-of-means-based selection of refusal direction can attain over 99 percent precision and recall as harmful input detectors.
+\paragraph{Activation projections colored by input harmfulness.}
+In both orthogonalization states, the defended model's activations occupy a narrower range along the mean-difference axis than the original model's activations. The defended model's spread along that axis stays on roughly the same scale after orthogonalization, while the original model's spread narrows. The class midpoint still separates most harmful and harmless inputs in all four panels. The classes overlap substantially along residual PC1. Each panel uses its own selected layer and fitted axes.
+
+\paragraph{Activation projections colored by refusal metric.}
+Before orthogonalization, both models generally assign higher refusal scores to harmful inputs than to harmless inputs. The defended model shows strong refusal for most inputs on the harmful side of the class midpoint in both orthogonalization states. By comparison, after orthogonalization the original model gives low refusal scores to many harmful inputs even though their activations still fall on the harmful side of the midpoint. The activation projection therefore continues to separate the classes even as the original model's first-token refusal signal weakens.
+
+\paragraph{Refusal metric histograms.}
+The refusal metric follows \href{https://arxiv.org/html/2406.11717v3}{Arditi et al.\ (2024), Appendix B}. Scores above the histogram's zero line indicate that refusal-associated tokens account for more than half of the next-token probability mass. Before orthogonalization, most harmful inputs exceed this threshold in both models, and the defended model reaches higher refusal scores on harmful inputs. After orthogonalization, most harmful inputs fall below the threshold in the original model, and their scores overlap substantially with those of harmless inputs. In the defended model, harmful inputs still tend to exceed the threshold and harmless inputs still tend to fall below it.
+
+\paragraph{Refusal as a harmful-input detector.}
+The table uses the histogram's zero line as the decision threshold. Recall is the fraction of harmful inputs whose refusal scores exceed zero. Harmless inputs above zero are false positives, and precision is the share of all inputs above zero that are harmful. The histograms normalize each class separately, so the table computes precision from the underlying counts. It applies the threshold to each individual score, including those in the bin that straddles zero.
+
+\begin{center}
+\begin{tabular}{llrrr}
+\hline
+Model & Orthogonalization state & Precision & Recall & F1 \\
+\hline
+original model & Non-orthogonalized & 0.957 & 0.875 & 0.914 \\
+defended model & Non-orthogonalized & 0.953 & 0.945 & 0.949 \\
+original model & Orthogonalized & 0.667 & 0.078 & 0.140 \\
+defended model & Orthogonalized & 0.952 & 0.930 & 0.941 \\
+\hline
+\end{tabular}
+\end{center}
+
+Before orthogonalization, the two models have comparable precision, and the defended model has higher recall (94.5\% versus 87.5\%). For the original model, recall falls from 87.5\% to 7.8\% and F1 falls from 0.914 to 0.140 after orthogonalization. This matches the shift of harmful inputs below zero and indicates strong attenuation of refusal on harmful prompts by this first-token measure. Recall for the defended model falls from 94.5\% to 93.0\%, and its precision stays near 95\%. Its histograms and detector scores show much less attenuation under the same measure.
 
 \end{document}

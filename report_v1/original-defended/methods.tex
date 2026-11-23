@@ -20,3 +20,9 @@ We reproduced the experimental setup by Arditi et. al for evaluation, with the f
     \item We replace their direction selection algorithm with a simpler approach that chooses the refusal direction from the layer that most effectively separates refusal from non-refusal using the decision boundary that is equidistant from the mean harmful activation and mean harmless activation. The motivation from this deviation from the paper is to reduce compute cost associated with doing forward passes to evaluate bypass\_metric, induce\_metric, and kl\_divergence.
 \end{itemize}
 \end{document}
+
+We also experimented with alternative ways, including logistic regression and ridge-regularized linear regression, to choose the refusal direction besides using the mean activation in response harmful and harmless inputs.
+    
+We chose not to use the refusal direction based on ridge-regularized linear regression on refusal score as a function of activation because the predictor we obtained by this method did not attain high precision and recall as a detector of harmful inputs in comparison to the other two predictors.
+
+Logistic regression results in the strongest separator between the two classes. However, both logistic regression and difference-of-means-based selection of refusal direction can attain over 99 percent precision and recall as harmful input detectors. We therefore used the difference of means for consistency with the original paper by Arditi et al.
